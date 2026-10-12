@@ -50,3 +50,10 @@ Evidence: LiteRT-LM overview multimodality + `flutter_edge_ai` stack (see `local
 ## 5. Open trial protocol (for Main's build queue)
 
 On S24 Ultra, synthetic F02 (clean) / F03 (camera-degraded) / F10 (partial): word-error-rate vs manifest text, per-page ms, added MB, peak RSS, and extraction F1 downstream. Promote challenger only on measured wins; keep vision-LLM as fallback for difficult regions either way. LiteParse and PaddleOCR code are Apache-2.0; ONNX Runtime is MIT. Verify selected model-weight licenses separately. These open-source code licenses support the project intent; ML Kit removal already justified on licensing + telemetry grounds.
+
+## 6. Unlimited-OCR (record-only, deferred — human request)
+
+- **What it is:** Baidu `baidu/Unlimited-OCR` (June 2026, arXiv 2606.23050, DeepSeek-OCR lineage), image-text-to-text document parsing VLM. Verified via HF API 2026-10-12: **3.336B params BF16 (~6.77 GB)**, license **MIT**, `custom_code` (`trust_remote_code=True`, custom `modeling_unlimitedocr.py`), inference via transformers-on-CUDA / vLLM / SGLang (all server-grade). Community GGUF quants exist (no official mobile story).
+- **Phone verdict: not viable for V1.** GB-scale resident memory, CUDA-only official path, no ONNX/LiteRT export, no Android/iOS bindings; multimodal GGUF on mobile is slow and battery-hostile. It competes with the vision-LLM transcription role, not with parser integrations — and loses on deployability to the already-shipped path and the PP-OCRv6-tiny challenger.
+- **Desktop verdict: eval candidate (recorded, not trialed).** MIT + multilingual + strong ParseBench/OmniDocBench numbers make it a candidate for workstation-side transcription benchmarking on F02/F03/F10 to set the quality ceiling. No runtime, weights, or dependency changes; no cloud calls from the app. Fixtures are synthetic, so even a hosted trial would touch no real data — prefer a local-GPU run regardless.
+- **Status:** idea recorded like decision models — deferred until after POC. Revisit only if a tiny/mobile-exportable variant appears.

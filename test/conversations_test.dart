@@ -245,4 +245,74 @@ void main() {
       throwsFormatException,
     );
   });
+
+  group('selectRelevantUserContext (MSG-048)', () {
+    ConversationSession longSession() {
+      ConversationTurn user(String id, String text, int day) =>
+          ConversationTurn(
+            id: id,
+            role: 'user',
+            text: text,
+            createdAt: DateTime.utc(2026, 10, day),
+          );
+      return _session('s-long', 'profile-a', [
+        user('u1', 'Synthetic filler story ${'irrelevant ' * 90}', 1),
+        user('u2', 'Another synthetic ramble ${'unrelated ' * 90}', 2),
+        ConversationTurn(
+          id: 'a1',
+          role: 'assistant',
+          text: 'ASSISTANT CLAIM about zephyrin must never be selected',
+          createdAt: DateTime.utc(2026, 10, 3),
+        ),
+        user(
+          'u3',
+          'Please remember zephyrin 250mg SYNTHETIC_LATER_MARKER for later',
+          4,
+        ),
+      ]);
+    }
+
+    test('finds a later matching turn buried behind long turns', () {
+      final selected = selectRelevantUserContext(
+        longSession(),
+        query: 'What did I note about zephyrin?',
+        maxChars: 1000,
+      );
+      expect(selected.length, lessThanOrEqualTo(1000));
+      expect(selected, contains('SYNTHETIC_LATER_MARKER'));
+      expect(selected, contains('u3'));
+      expect(selected, contains('2026-10-04'));
+      expect(selected, contains('user-stated'));
+      expect(selected, isNot(contains('ASSISTANT CLAIM')));
+    });
+
+    test('falls back to recent context with provenance, never invention', () {
+      final selected = selectRelevantUserContext(
+        longSession(),
+        query: 'qwerty zzz koala',
+        maxChars: 1000,
+      );
+      expect(selected.length, lessThanOrEqualTo(1000));
+      expect(selected, contains('No direct match'));
+      expect(selected, contains('SYNTHETIC_LATER_MARKER'));
+      expect(selected, isNot(contains('ASSISTANT CLAIM')));
+    });
+
+    test('empty or assistant-only sessions select nothing', () {
+      expect(
+        selectRelevantUserContext(
+          _session('s', 'profile-a', []),
+          query: 'zephyrin',
+        ),
+        isEmpty,
+      );
+      expect(
+        selectRelevantUserContext(
+          _session('s', 'profile-a', [_turn('a', 'assistant', 'zephyrin')]),
+          query: 'zephyrin',
+        ),
+        isEmpty,
+      );
+    });
+  });
 }

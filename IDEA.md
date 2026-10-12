@@ -96,7 +96,7 @@ This satisfies “always local, share only when tapped” while still letting us
 - Sessions work like Claude/GPT chats: list with titles + timestamps, new session, per-session view, delete with confirm. Persisted in the encrypted vault (titles and turns are health-bearing).
 - Sessions feed the agent as bounded local context: recent user turns (extractive, capped) plus retrieved session memory. Answers still cite report sources; memory never authorizes tools or clinical claims.
 - **Deletion semantics (owner-fixed):** deleting a session removes its turns **and** its derived memory. Report originals, facts, summaries, and medicines survive independently — they are vault truth, not session state.
-- Extended thinking and public-web research stay bounded: same planner allowlist (`extended_thinking` is an INTERNAL autonomous tool or an explicitly requested mode — never a user-typed command), query-only gate, no new tools, no remote inference. Activity shows `Extended thinking · …` and the final answer carries an `**Extended thinking**` label. Decision-model routing (zero-shot classifiers) is deferred until after POC.
+- Extended thinking and public-web research stay bounded: same planner allowlist (`extended_thinking` is an INTERNAL autonomous tool or an explicitly requested mode — never a user-typed command), query-only gate, no new tools, no remote inference. Activity shows `Extended thinking · …` and the final answer carries an `**Extended thinking**` label. Decision-model routing (zero-shot classifiers) is deferred until after POC. Unlimited-OCR (Baidu 3.3B VLM, MIT) is recorded as a desktop-eval OCR candidate only — no phone runtime; see `docs/research/local-ocr.md`.
 
 ## 4. Architecture (strict local)
 
@@ -201,7 +201,7 @@ Enforce `WHERE profile_id=?` everywhere including vectors, sessions, and memorie
 
 ## 13. Open decisions
 
-**Locked since last review:** reference phone #1 = Samsung S24 Ultra (APK built); language = English v1; fully open-source under github.com/ayumitra; web search = autonomous local-LLM invocation, query-only, no per-search tap; extended thinking = autonomous-or-toggle deep research (empty-query action, normal web skipped, ≤3 rounds / 6 searches, visible label); OCR = vision-LLM first, PP-OCRv6-tiny ONNX challenger, ML Kit removed, Tesseract never default; profiles = DOB-first with manager; sessions = Claude-style with session-scoped memory, deletion removes turns + derived memory while originals/facts survive; decision-model routing deferred post-POC.
+**Locked since last review:** reference phone #1 = Samsung S24 Ultra (APK built); language = English v1; fully open-source under github.com/ayumitra; web search = autonomous local-LLM invocation, query-only, no per-search tap; extended thinking = autonomous-or-toggle deep research (empty-query action, normal web skipped, ≤3 rounds / 6 searches, visible label); OCR = vision-LLM first, PP-OCRv6-tiny ONNX challenger, ML Kit removed, Tesseract never default; profiles = DOB-first with manager; sessions = Claude-style with session-scoped memory, deletion removes turns + derived memory while originals/facts survive; decision-model routing deferred post-POC; Unlimited-OCR recorded as desktop-eval candidate only.
 
 1. Which EmbeddingGemma 2 variant fits target phones/modalities?
 2. iPhone reference device + min specs + latency thresholds?

@@ -28,6 +28,24 @@ class SessionIntelligence extends LocalIntelligence {
   }
 }
 
+/// Mutable-plan fake for the MSG-048 recall regression: records both the
+/// conversation-path and summary-path model inputs for inspection.
+class RecallIntelligence extends LocalIntelligence {
+  final answerInputs = <Map<String, dynamic>>[];
+  String plan = '{"action":"conversation","query":""}';
+
+  @override
+  bool get available => true;
+
+  @override
+  Future<String> generate(String instruction, String input) async {
+    final payload = Map<String, dynamic>.from(jsonDecode(input) as Map);
+    if (instruction == plannerPrompt) return plan;
+    answerInputs.add(payload);
+    return 'SYNTHETIC ANSWER WITHOUT CITATIONS';
+  }
+}
+
 void main() {
   late Directory directory;
   late EncryptedVault vault;
@@ -333,6 +351,77 @@ void main() {
         jsonEncode(intelligence.answerInputs.last),
         isNot(contains('B_RETAINED_CONTEXT')),
       );
+    },
+  );
+
+  test(
+    'Long memory recall surfaces the later matching statement in both paths',
+    () async {
+      // MSG-048: the stored memory runs far past the old first-1500 window,
+      // so only query-relevant selection keeps the later match in model input.
+      final recall = RecallIntelligence();
+      final local = AppController(intelligence: recall)
+        ..vault = vault
+        ..loaded = true;
+      try {
+        await local.createProfile('Synthetic A', DateTime(2000), '', false);
+        final a = local.profile!.id;
+        await local.ask('Synthetic filler one ${'irrelevant ' * 100}');
+        await local.ask('Synthetic filler two ${'unrelated ' * 100}');
+        await local.ask(
+          'Note for later: zephyrin 250mg SYNTHETIC_LATER_MARKER end',
+        );
+        final originId = local.activeSessionId!;
+        final stored = local.data.memories.single.text;
+        expect(stored.indexOf('SYNTHETIC_LATER_MARKER') > 1500, isTrue);
+
+        // Conversation path in a fresh session.
+        await local.newConversation();
+        await local.ask('What did I note about zephyrin?');
+        final convoInput = recall.answerInputs.last;
+        final context = (convoInput['userStatedContext'] as List).join('\n');
+        expect(context, contains('SYNTHETIC_LATER_MARKER'));
+        expect(context, contains('User turn '));
+        expect(context, contains('user-stated'));
+        expect(context, isNot(contains('SYNTHETIC ANSWER')));
+        for (final entry in convoInput['userStatedContext'] as List) {
+          expect((entry as String).length, lessThanOrEqualTo(1500));
+        }
+
+        // Summary path with the same recall.
+        recall.plan = '{"action":"search_records","query":"zephyrin note"}';
+        await local.ask('Summarize my zephyrin note');
+        final summaryInput = recall.answerInputs.last;
+        final mems = summaryInput['userStatedConversationMemories'] as List;
+        expect(mems, hasLength(1));
+        final mem = mems.single as Map;
+        expect(mem['sourceId'], 'conversation:$originId');
+        expect(mem['text'] as String, contains('SYNTHETIC_LATER_MARKER'));
+        expect(mem['text'] as String, contains('User turn '));
+        expect((mem['text'] as String).length, lessThanOrEqualTo(1000));
+        expect(mem['text'] as String, isNot(contains('SYNTHETIC ANSWER')));
+
+        // Other profiles never receive the statement.
+        await local.createProfile('Synthetic B', DateTime(2010), '', true);
+        recall.plan = '{"action":"conversation","query":""}';
+        await local.ask('What about zephyrin?');
+        expect(
+          (recall.answerInputs.last['userStatedContext'] as List).join(),
+          isNot(contains('SYNTHETIC_LATER_MARKER')),
+        );
+
+        // Deleting the origin session removes the recall everywhere.
+        await local.selectProfile(a);
+        await local.deleteConversation(originId);
+        await local.newConversation();
+        await local.ask('What did I note about zephyrin?');
+        expect(
+          (recall.answerInputs.last['userStatedContext'] as List).join(),
+          isNot(contains('SYNTHETIC_LATER_MARKER')),
+        );
+      } finally {
+        local.dispose();
+      }
     },
   );
 }

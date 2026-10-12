@@ -275,6 +275,29 @@ void main() {
     },
   );
 
+  test(
+    'the controller rejects answers citing sources outside the answer set',
+    () async {
+      intelligence
+        ..plannerResponse = '{"action":"extended_thinking","query":""}'
+        ..researchPlans = [
+          '{"actions":[{"action":"web_search","query":"amoxicillin label"}]}',
+        ]
+        ..assessorResponse = '{"missingTopics":[]}'
+        ..summaryResponse = 'Claim citing an unseen source [web-99].';
+      webSearch.scripted = [_publicSource('provider-1')];
+
+      await controller.ask('Research amoxicillin');
+
+      expect(webSearch.queries, ['amoxicillin label']);
+      final finalMessage = controller.messages.last;
+      expect(finalMessage.text, contains('could not validate the answer'));
+      expect(finalMessage.text, isNot(contains('[web-99]')));
+      // The retrieved evidence is still preserved for the user.
+      expect(finalMessage.web.map((s) => s.id), ['web-1']);
+    },
+  );
+
   group('extended_thinking plan validation', () {
     test('accepts the empty-query action', () {
       final actions = validateAgentPlan(
