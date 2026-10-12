@@ -73,6 +73,10 @@ class AppController extends ChangeNotifier {
   final messages = <ChatEntry>[];
   bool get isPreview => false;
 
+  /// Refreshes views after external configuration changes (e.g. localhost
+  /// model settings edited from a settings screen).
+  void refreshViews() => notifyListeners();
+
   Future<void> attachReport() async {
     if (busy) return;
     final file = await pickLocalFile(['pdf', 'png', 'jpg', 'jpeg', 'txt']);

@@ -1,285 +1,236 @@
+// In-memory replica workflow tests (no sample data, no network).
+// A fake localhost model answers through the real prompts/validators, so
+// these tests cover the actual import → extract → retrieve → answer flow.
+
 import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:ayumitra/preview/demo_controller.dart';
-import 'package:ayumitra/domain/records.dart';
+import 'package:ayumitra/services/local_embeddings.dart';
+import 'package:ayumitra/services/local_intelligence.dart';
+import 'package:ayumitra/services/local_research.dart';
 import 'package:flutter_test/flutter_test.dart';
+
+/// Scripted stand-in for the user's localhost server. Routes on the real
+/// prompt constants; citations are echoed from the model input.
+class FakeIntelligence extends LocalIntelligence {
+  String plannerResponse = '{"action":"conversation","query":""}';
+  String organizerResponse = '{}';
+  String extractorResponse = '{"facts":[]}';
+  String Function(Map input)? summaryFn;
+
+  @override
+  bool get available => true;
+
+  @override
+  Future<String> generate(String instruction, String input) async {
+    if (instruction == plannerPrompt) return plannerResponse;
+    if (instruction == organizerPrompt) return organizerResponse;
+    if (instruction == extractorPrompt) return extractorResponse;
+    if (instruction == researchPlannerPrompt) {
+      return '{"actions":[{"action":"finish"}]}';
+    }
+    if (instruction == researchAssessorPrompt) {
+      return '{"missingTopics":[]}';
+    }
+    final decoded = jsonDecode(input) as Map;
+    if (summaryFn != null) return summaryFn!(decoded);
+    final ids = RegExp(
+      r'"sourceId":"([^"]+)"',
+    ).allMatches(input).map((m) => m.group(1)).toSet().take(2).toList();
+    return 'Local answer ${ids.map((id) => '[$id]').join(' ')}.';
+  }
+}
+
+class FakeEmbeddings extends LocalEmbeddings {
+  @override
+  bool get available => true;
+
+  @override
+  Future<void> load(String path, String fingerprint) async {
+    version = 'fake:1';
+  }
+
+  @override
+  Future<List<double>> embed(String text, {bool document = false}) async {
+    version ??= 'fake:1';
+    final hash = text.length % 7;
+    return [1.0 + hash, 0.5, 0.25];
+  }
+}
+
+Uint8List _reportBytes() => Uint8List.fromList(
+  utf8.encode(
+    'Hb 11.2 g/dL [12.0-16.0]\nReport date: 2026-03-14\nWBC 7.4 10^9/L [4.0-12.0]\n',
+  ),
+);
+
+DemoController _controller(FakeIntelligence intelligence) =>
+    DemoController(intelligence: intelligence, embeddings: FakeEmbeddings());
+
+Future<DemoController> _ready({String? history}) async {
+  final intelligence = FakeIntelligence()
+    ..organizerResponse = jsonEncode({
+      'type': 'lab',
+      'eventDate': '2026-03-14',
+      'dateEvidence': 'Report date: 2026-03-14',
+      'dateSourceLineId': 'p1-l2',
+    })
+    ..extractorResponse = jsonEncode({
+      'facts': [
+        {
+          'kind': 'lab',
+          'name': 'Hb',
+          'value': '11.2',
+          'unit': 'g/dL',
+          'range': '12.0-16.0',
+          'sourceLineId': 'p1-l1',
+          'evidence': 'Hb 11.2 g/dL [12.0-16.0]',
+        },
+      ],
+    });
+  final controller = _controller(intelligence);
+  await controller.initialize();
+  await controller.createProfile(
+    'Test Child',
+    DateTime(2021, 4, 18),
+    history ?? '',
+    true,
+  );
+  return controller;
+}
 
 void main() {
   test(
-    'preview workflow stays in memory and preserves synthetic source evidence',
+    'in-memory replica imports, extracts, and answers from own documents',
     () async {
-      final controller = DemoController();
-      await controller.initialize();
-      expect(controller.isPreview, isTrue);
-      expect(controller.loaded, isTrue);
-      expect(controller.data.profiles, isEmpty);
-      await controller.createProfile('Example child', _birthDate(5), '', true);
-      await controller.importSample(Uint8List(0));
-      expect(controller.reports, hasLength(4));
-      expect(controller.reports.last.eventDate, isNull);
+      final controller = await _ready();
+      addTearDown(controller.dispose);
+      await controller.importBytes('blood.txt', 'txt', _reportBytes());
+      expect(controller.reports, hasLength(1));
+      final report = controller.reports.single;
+      // No bundled sample data: only what was imported exists.
+      expect(report.name, 'blood.txt');
+      expect(report.type, 'lab');
+      final event = report.eventDate!;
+      expect((event.year, event.month, event.day), (2026, 3, 14));
+      expect(report.facts.single.value, '11.2');
+      expect(report.summaryMarkdown, contains('[${report.id}/p1-l1]'));
+
+      (controller.intelligence as FakeIntelligence).plannerResponse =
+          '{"actions":[{"action":"search_records","query":"hb value"}]}';
+      await controller.ask('What is my Hb?');
+      final answer = controller.messages.last;
+      expect(answer.isUser, isFalse);
+      expect(answer.text, contains('[${report.id}/p1-l1]'));
+      expect(answer.hits, isNotEmpty);
       expect(
-        controller.reports.every((r) => r.name.startsWith('Synthetic')),
+        answer.hits.map((h) => h.line.text),
+        contains('Hb 11.2 g/dL [12.0-16.0]'),
+      );
+      expect(
+        answer.hits.every((h) => h.report.profileId == controller.profile!.id),
         isTrue,
       );
-      await controller.ask('Compare my hemoglobin results');
-      final answer = controller.messages.last;
-      expect(answer.text, contains('scripted response'));
-      expect(answer.text, contains('11.2'));
-      expect(answer.text, contains('10.8'));
-      expect(answer.text, isNot(contains('| Report | Clinical date |')));
+      // Transcript persisted to the session with user + assistant turns.
       expect(
-        answer.text.indexOf('| Name | Value |'),
-        lessThan(answer.text.indexOf('## Reports used')),
+        controller.activeSession!.turns.map((t) => t.role),
+        containsAll(['user', 'assistant']),
       );
-      expect(answer.hits.every((hit) => hit.report.type == 'lab'), isTrue);
-      expect(answer.web, isEmpty);
-      final report = controller.reports.firstWhere(
-        (r) => r.facts.first.value == '11.2',
-      );
-      final original = utf8.decode(await controller.original(report));
-      await controller.correctFact(report, report.facts.first, '11.3');
-      final changed = controller.reports.firstWhere((r) => r.id == report.id);
-      expect(changed.summaryMarkdown, isNull);
-      expect(changed.facts.first.corrected, isTrue);
-      expect(changed.facts.first.originalValue, '11.2');
-      expect(utf8.decode(await controller.original(changed)), original);
-      await controller.retry(changed);
-      expect(
-        controller.reports.firstWhere((r) => r.id == report.id).summaryMarkdown,
-        contains('11.3 (user corrected)'),
-      );
-      await controller.initialize();
-      expect(controller.data.reports, isEmpty);
-      expect(controller.messages, isEmpty);
-      controller.dispose();
+      expect(controller.data.memories, isNotEmpty);
     },
   );
 
   test(
-    'preview source access and follow-up results are scoped to the profile',
+    'correction clears the summary, survives retry, original untouched',
     () async {
-      final controller = DemoController();
-      await controller.initialize();
-      await controller.createProfile('Example one', _birthDate(8), '', true);
-      await controller.attachReport();
-      await controller.attachReport();
-      final firstProfile = controller.profile!.id;
-      final firstReport = controller.reports.first;
-      await controller.ask('Find my medicines');
-      await controller.ask('Show it again');
-      expect(
-        controller.messages.last.hits.every(
-          (hit) => hit.report.type == 'prescription',
-        ),
-        isTrue,
-      );
-      await controller.createProfile('Example two', _birthDate(42), '', false);
+      final controller = await _ready();
+      addTearDown(controller.dispose);
+      await controller.importBytes('blood.txt', 'txt', _reportBytes());
+      final report = controller.reports.single;
+      final original = await controller.original(report);
+      await controller.correctFact(report, report.facts.single, '11.9');
+      final changed = controller.reports.single;
+      expect(changed.summaryMarkdown, isNull);
+      expect(changed.facts.single.corrected, isTrue);
+      expect(changed.facts.single.originalValue, '11.2');
+      await controller.retry(changed);
+      final reprocessed = controller.reports.single;
+      expect(reprocessed.facts.single.value, '11.9');
+      expect(reprocessed.facts.single.corrected, isTrue);
+      expect(await controller.original(reprocessed), original);
+    },
+  );
+
+  test('no model connected degrades to keyword excerpts', () async {
+    final controller = DemoController();
+    await controller.initialize();
+    addTearDown(controller.dispose);
+    await controller.createProfile(
+      'Test Child',
+      DateTime(2021, 4, 18),
+      '',
+      true,
+    );
+    expect(controller.intelligence.available, isFalse);
+    await controller.ask('Hello?');
+    expect(
+      controller.messages.last.text,
+      contains('local chat model in settings'),
+    );
+    // A session still exists for the turns, in memory only.
+    expect(controller.activeSession, isNotNull);
+  });
+
+  test(
+    'sessions isolate profiles; deletion removes memory, keeps reports',
+    () async {
+      final controller = await _ready();
+      addTearDown(controller.dispose);
+      await controller.importBytes('blood.txt', 'txt', _reportBytes());
+      await controller.ask('What is my Hb?');
+      final firstId = controller.activeSessionId!;
+      await controller.newConversation();
+      await controller.ask('And the WBC?');
+      final secondId = controller.activeSessionId!;
+      await controller.createProfile('Second', DateTime(1990, 2, 3), '', false);
       expect(controller.reports, isEmpty);
       expect(controller.messages, isEmpty);
-      await expectLater(controller.original(firstReport), throwsStateError);
-      await controller.attachReport();
-      expect(
-        controller.reports.every((r) => r.profileId != firstProfile),
-        isTrue,
-      );
-      controller.dispose();
-    },
-  );
-
-  test(
-    'typed attachment and follow-up references use synthetic reports',
-    () async {
-      final controller = DemoController();
-      await controller.initialize();
-      await controller.createProfile('Example child', _birthDate(5), '', true);
-      await controller.ask('Add this report');
-      expect(controller.reports, hasLength(1));
-      expect(controller.messages.first.isUser, isTrue);
-      expect(controller.messages.last.text, contains('scripted response'));
-      expect(controller.messages.last.text, contains('No file was uploaded'));
-      await controller.importSample(Uint8List(0));
-      await controller.ask('Find my medicines');
-      await controller.ask('Compare my hemoglobin results');
-      expect(
-        controller.messages.last.hits.every((hit) => hit.report.type == 'lab'),
-        isTrue,
-      );
-      await controller.ask('Compare previous');
-      final answer = controller.messages.last;
-      expect(answer.text, contains('11.2'));
-      expect(answer.text, contains('10.8'));
-      expect(answer.text, isNot(contains('Amoxicillin')));
-      expect(answer.hits.every((hit) => hit.report.type == 'lab'), isTrue);
-      expect(answer.web, isEmpty);
-      controller.dispose();
-    },
-  );
-
-  test(
-    'conversation selection, recall, and deletion remain profile scoped',
-    () async {
-      final controller = DemoController();
-      await controller.initialize();
-      await controller.createProfile('Example child', _birthDate(5), '', true);
-      final firstProfileId = controller.profile!.id;
-      await controller.importSample(Uint8List(0));
-      await controller.ask('Find my hemoglobin results');
-      final firstId = controller.activeSession!.id;
-      expect(controller.activeSession!.title, 'Find my hemoglobin results');
-      expect(
-        controller.data.memories.single.text,
-        contains('Find my hemoglobin results'),
-      );
-
-      await controller.newConversation();
-      expect(controller.messages, isEmpty);
-      await controller.ask('Compare previous');
-      final secondId = controller.activeSession!.id;
-      expect(controller.messages.last.text, contains('earlier conversation'));
-      expect(controller.messages.last.text, contains('11.2'));
-      expect(controller.messages.last.text, contains('10.8'));
-      expect(
-        controller.messages.last.hits.every((hit) => hit.report.type == 'lab'),
-        isTrue,
-      );
-
-      await controller.newConversation();
-      await controller.ask('Find my medicines');
-      await controller.selectConversation(firstId);
-      expect(controller.activeSession!.id, firstId);
-      expect(controller.messages.last.hits, isNotEmpty);
-      expect(
-        controller.messages.last.hits.every(
-          (hit) => hit.report.profileId == firstProfileId,
-        ),
-        isTrue,
-      );
-      await controller.createProfile(
-        'Example adult',
-        _birthDate(42),
-        '',
-        false,
-      );
-      await controller.ask('Hello');
-      final otherId = controller.activeSession!.id;
-      await controller.selectProfile(firstProfileId);
-      expect(controller.activeSession!.id, firstId);
-      await controller.deleteConversation(otherId);
-      expect(
-        controller.data.sessions.any((session) => session.id == otherId),
-        isTrue,
+      await controller.selectProfile(
+        controller.data.profiles.firstWhere((p) => p.name == 'Test Child').id,
       );
       await controller.deleteConversation(secondId);
+      expect(controller.data.sessions.any((s) => s.id == secondId), isFalse);
       expect(
-        controller.data.sessions.any((session) => session.id == secondId),
+        controller.data.memories.any((m) => m.sessionId == secondId),
         isFalse,
       );
-      expect(
-        controller.data.memories.any((memory) => memory.sessionId == secondId),
-        isFalse,
-      );
-      expect(controller.reports, hasLength(4));
-      await controller.deleteConversation(firstId);
-      expect(
-        controller.data.sessions.any((session) => session.id == firstId),
-        isFalse,
-      );
-      expect(
-        controller.data.memories.any((memory) => memory.sessionId == firstId),
-        isFalse,
-      );
-      expect(controller.activeSession?.id, isNot(firstId));
-      expect(controller.reports, hasLength(4));
-      controller.dispose();
+      expect(controller.reports, hasLength(1));
+      expect(controller.data.sessions.any((s) => s.id == firstId), isTrue);
     },
   );
 
-  test(
-    'DOB changes update event ages and extended thinking stays scripted',
-    () async {
-      final controller = DemoController();
-      await controller.initialize();
-      await controller.createProfile('Example child', _birthDate(5), '', true);
-      final profileId = controller.profile!.id;
-      await controller.attachReport();
-      final previousAge = ageAtEvent(
-        controller.profile!,
-        controller.reports.first.eventDate,
-      );
-      await controller.updateProfile(
-        profileId,
-        name: 'Updated example',
-        dateOfBirth: _birthDate(6),
-        history: 'Invented background',
-        isChild: true,
-      );
-      final newAge = ageAtEvent(
-        controller.profile!,
-        controller.reports.first.eventDate,
-      );
-      expect(newAge, isNot(previousAge));
-      expect(controller.reports.first.summaryMarkdown, contains(newAge));
-      controller.setExtendedThinking(true);
-      await controller.ask('Find my hemoglobin results');
-      expect(
-        controller.messages.last.text,
-        contains('Extended thinking · scripted review'),
-      );
-      expect(
-        controller.messages.last.text,
-        contains('No AI model or web search ran'),
-      );
-      expect(controller.messages.last.web, isEmpty);
-      expect(controller.busy, isFalse);
-      expect(controller.intelligence.available, isFalse);
-      expect(controller.embeddings.available, isFalse);
-      expect(controller.webSearch.available, isFalse);
-      controller.dispose();
-    },
-  );
+  test('autonomous extended thinking is labeled from local research', () async {
+    final controller = await _ready(history: 'User-provided background.');
+    addTearDown(controller.dispose);
+    await controller.importBytes('blood.txt', 'txt', _reportBytes());
+    final intelligence = controller.intelligence as FakeIntelligence;
+    intelligence.plannerResponse =
+        '{"actions":[{"action":"extended_thinking","query":""},{"action":"search_records","query":"hb"}]}';
+    intelligence.summaryFn = (input) => 'Background note [user-history].';
+    await controller.ask('Research my hemoglobin thoroughly');
+    final answer = controller.messages.last;
+    expect(answer.text.startsWith('**Extended thinking**'), isTrue);
+    expect(answer.text, contains('[user-history]'));
+  });
 
-  test(
-    'complex research requests automatically use a scripted review',
-    () async {
-      final controller = DemoController();
-      await controller.initialize();
-      await controller.createProfile('Example child', _birthDate(5), '', true);
-      await controller.importSample(Uint8List(0));
-      for (final request in [
-        'Deep research my hemoglobin history',
-        'Research thoroughly my blood reports',
-      ]) {
-        expect(controller.extendedThinking, isFalse);
-        await controller.ask(request);
-        expect(
-          controller.messages.last.text,
-          contains('Extended thinking · scripted review'),
-        );
-        expect(
-          controller.messages.last.text,
-          contains('Automatically selected for this research request'),
-        );
-        expect(
-          controller.messages.last.text,
-          contains('No AI model or web search ran'),
-        );
-        expect(
-          controller.messages.last.hits.every(
-            (hit) => hit.report.type == 'lab',
-          ),
-          isTrue,
-        );
-        expect(controller.messages.last.web, isEmpty);
-        expect(controller.extendedThinking, isFalse);
-        expect(controller.busy, isFalse);
-      }
-      controller.dispose();
-    },
-  );
-}
-
-DateTime _birthDate(int years) {
-  final now = DateTime.now();
-  return DateTime(now.year - years, now.month, now.day);
+  test('reload clears the in-memory vault by design', () async {
+    final controller = await _ready();
+    addTearDown(controller.dispose);
+    await controller.importBytes('blood.txt', 'txt', _reportBytes());
+    expect(controller.reports, hasLength(1));
+    await controller.initialize();
+    expect(controller.data.reports, isEmpty);
+    expect(controller.messages, isEmpty);
+  });
 }

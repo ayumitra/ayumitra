@@ -1,12 +1,10 @@
-import 'dart:convert';
-import 'dart:typed_data';
-
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:intl/intl.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../services/local_file_picker.dart';
+import '../services/web_llm.dart';
 import '../app_controller.dart';
 import '../domain/conversations.dart';
 import '../domain/records.dart';
@@ -62,7 +60,7 @@ class AyumitraApp extends StatelessWidget {
                     child: Padding(
                       padding: const EdgeInsets.all(10),
                       child: Text(
-                        'UX preview · Synthetic reports · Sample responses · Nothing saved',
+                        'Local build · Your documents · In-memory only · Nothing uploaded',
                         style: Theme.of(context).textTheme.labelMedium,
                         textAlign: TextAlign.center,
                       ),
@@ -295,7 +293,7 @@ class _OnboardingState extends State<Onboarding> {
                       Expanded(
                         child: Text(
                           widget.controller.isPreview
-                              ? 'Use invented details. This preview uses synthetic reports and sample responses, and clears on reload.'
+                              ? 'Add your own documents below. Everything stays in this tab’s memory and clears on reload; intelligence comes only from your localhost model server.'
                               : 'Your records and AI stay on this phone. The assistant can search public web information; it never uploads your reports.',
                           style: const TextStyle(fontSize: 13, height: 1.5),
                         ),
@@ -323,26 +321,6 @@ class _OnboardingState extends State<Onboarding> {
                       ),
                     ),
                   ),
-                  if (widget.controller.isPreview)
-                    Center(
-                      child: TextButton.icon(
-                        icon: const Icon(Icons.science_outlined, size: 18),
-                        label: const Text('Explore with a sample profile'),
-                        onPressed: widget.controller.busy
-                            ? null
-                            : () async {
-                                await widget.controller.createProfile(
-                                  'Example child',
-                                  DateTime(2021, 4, 18),
-                                  'Synthetic starting history for a UX demonstration.',
-                                  true,
-                                );
-                                await widget.controller.importSample(
-                                  Uint8List(0),
-                                );
-                              },
-                      ),
-                    ),
                   if (widget.controller.failure != null)
                     Padding(
                       padding: const EdgeInsets.only(top: 16),
@@ -736,7 +714,7 @@ class _CompanionScreenState extends State<CompanionScreen> {
             icon: const Icon(Icons.output_outlined),
           ),
         IconButton(
-          tooltip: c.isPreview ? 'About this preview' : 'Companion settings',
+          tooltip: c.isPreview ? 'Local AI setup' : 'Companion settings',
           onPressed: c.busy
               ? null
               : () async {
@@ -776,7 +754,9 @@ class _CompanionScreenState extends State<CompanionScreen> {
                     Expanded(
                       child: Text(
                         c.isPreview
-                            ? 'Synthetic session · Sample responses'
+                            ? (c.intelligence.available
+                                  ? 'Local model connected · answers from your documents'
+                                  : 'No local model connected — open settings to connect one')
                             : 'Your private companion · AI stays on this device',
                         style: const TextStyle(fontSize: 11, color: ink),
                       ),
@@ -865,23 +845,20 @@ class _CompanionScreenState extends State<CompanionScreen> {
             onPressed: c.busy ? null : attach,
             icon: const Icon(Icons.add),
             label: Text(
-              c.isPreview ? 'Add a synthetic report' : 'Add the first report',
+              c.isPreview ? 'Add your own report' : 'Add the first report',
             ),
           ),
-          TextButton(
-            onPressed: c.busy
-                ? null
-                : () => c.importSample(
-                    Uint8List.fromList(
-                      utf8.encode(
-                        'SYNTHETIC EXAMPLE — NOT A REAL PATIENT\nCategory: Laboratory\nReport date: 2026-10-01\n'
-                        'Test | Result | Unit | Printed range\nHemoglobin | 11.2 | g/dL | 10.0-14.0\n'
-                        'White blood cells | 7.4 | 10^9/L | 4.0-12.0\n',
-                      ),
-                    ),
-                  ),
-            child: const Text('Try a synthetic example'),
-          ),
+          if (c.isPreview && !c.intelligence.available)
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Text(
+                'Attach documents, then connect your localhost model in settings to read and discuss them.',
+                style: TextStyle(
+                  fontSize: 13,
+                  color: Theme.of(context).colorScheme.secondary,
+                ),
+              ),
+            ),
         ],
       );
     }
@@ -1026,9 +1003,7 @@ class _CompanionScreenState extends State<CompanionScreen> {
           crossAxisAlignment: CrossAxisAlignment.end,
           children: [
             IconButton(
-              tooltip: c.isPreview
-                  ? 'Add a synthetic report'
-                  : 'Attach a report',
+              tooltip: c.isPreview ? 'Add your report' : 'Attach a report',
               onPressed: c.busy ? null : attach,
               icon: const Icon(Icons.add_circle_outline),
             ),
@@ -1060,7 +1035,7 @@ class _CompanionScreenState extends State<CompanionScreen> {
             padding: const EdgeInsets.only(left: 8, top: 2),
             child: Tooltip(
               message: c.isPreview
-                  ? 'Show a scripted research example. No model or web calls.'
+                  ? 'Give your local model more time to work through your question.'
                   : 'Give the local assistant more time to work through your question.',
               child: FilterChip(
                 avatar: const Icon(Icons.psychology_outlined, size: 17),
@@ -1211,10 +1186,18 @@ class SettingsScreen extends StatefulWidget {
 
 class _SettingsScreenState extends State<SettingsScreen> {
   final keyInput = TextEditingController();
+  final endpointInput = TextEditingController();
+  final chatModelInput = TextEditingController();
+  final visionModelInput = TextEditingController();
+  final embeddingModelInput = TextEditingController();
   String family = 'gemma4';
   @override
   void dispose() {
     keyInput.dispose();
+    endpointInput.dispose();
+    chatModelInput.dispose();
+    visionModelInput.dispose();
+    embeddingModelInput.dispose();
     super.dispose();
   }
 
@@ -1236,19 +1219,105 @@ class _SettingsScreenState extends State<SettingsScreen> {
     builder: (context, _) {
       final c = widget.controller;
       if (c.isPreview) {
+        final intel = c.intelligence is WebIntelligence
+            ? c.intelligence as WebIntelligence
+            : null;
+        final embed = c.embeddings is WebEmbeddings
+            ? c.embeddings as WebEmbeddings
+            : null;
+        if (endpointInput.text.isEmpty && intel != null) {
+          endpointInput.text = intel.endpoint;
+          chatModelInput.text = intel.chatModel;
+          visionModelInput.text = intel.visionModel;
+          if (embed != null) {
+            if (embed.endpoint.isNotEmpty) {
+              endpointInput.text = embed.endpoint;
+            }
+            embeddingModelInput.text = embed.embeddingModel;
+          }
+        }
         return Scaffold(
-          appBar: AppBar(title: const Text('About this preview')),
+          appBar: AppBar(title: const Text('Local AI setup')),
           body: ListView(
             padding: const EdgeInsets.all(24),
             children: [
               const Text(
-                'Try the experience',
+                'Connect your own models',
                 style: TextStyle(fontSize: 26, fontWeight: FontWeight.w600),
               ),
               const SizedBox(height: 12),
               const Text(
-                'This preview uses synthetic records and sample responses. It keeps the session in memory and clears it on reload. Local model setup, camera capture, and live public search are tested in the mobile app.',
+                'This client talks only to a model server on your own machine (Ollama-compatible, localhost only). '
+                'Your documents stay in this browser tab’s memory and are sent nowhere else. '
+                'If your browser blocks the connection, start Ollama with OLLAMA_ORIGINS set to this page’s origin.',
+                style: TextStyle(fontSize: 13, height: 1.5),
               ),
+              const SizedBox(height: 16),
+              TextField(
+                controller: endpointInput,
+                keyboardType: TextInputType.url,
+                decoration: const InputDecoration(
+                  labelText: 'Local server (localhost only)',
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: chatModelInput,
+                decoration: const InputDecoration(
+                  labelText: 'Chat model (e.g. gemma3:1b)',
+                  helperText:
+                      'Required for organizing, extracting, and answering.',
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: visionModelInput,
+                decoration: const InputDecoration(
+                  labelText: 'Vision model (optional)',
+                  helperText: 'Needed to read scans and photos.',
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: embeddingModelInput,
+                decoration: const InputDecoration(
+                  labelText: 'Embedding model (optional)',
+                  helperText:
+                      'Enables semantic search; keyword search works without it.',
+                ),
+              ),
+              const SizedBox(height: 16),
+              FilledButton(
+                onPressed: (intel == null || embed == null)
+                    ? null
+                    : () {
+                        intel.endpoint = endpointInput.text.trim();
+                        intel.chatModel = chatModelInput.text.trim();
+                        intel.visionModel = visionModelInput.text.trim();
+                        embed.endpoint = endpointInput.text.trim();
+                        embed.embeddingModel = embeddingModelInput.text.trim();
+                        embed.version = null;
+                        c.refreshViews();
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text('Local model settings saved.'),
+                          ),
+                        );
+                      },
+                child: const Text('Save local AI settings'),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Chat: ${intel != null && intel.available ? 'connected (${intel.chatModel})' : 'not connected'} · '
+                'Vision: ${intel != null && intel.visionAvailable ? 'set' : 'not set'} · '
+                'Embeddings: ${embed != null && embed.available ? 'set' : 'not set'}',
+                style: const TextStyle(fontSize: 12),
+              ),
+              if (c.failure != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 8),
+                  child: Text(c.failure!),
+                ),
               const SizedBox(height: 24),
               ListTile(
                 leading: const Icon(Icons.code),
@@ -1509,7 +1578,7 @@ class ReportScreen extends StatelessWidget {
               const SizedBox(height: 24),
               Text(
                 controller.isPreview
-                    ? 'Sample summary · synthetic data'
+                    ? 'Local summary · review against sources'
                     : 'AI summary · review against sources',
                 style: const TextStyle(fontSize: 12, color: ink),
               ),
