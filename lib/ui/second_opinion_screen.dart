@@ -50,16 +50,19 @@ class _SecondOpinionScreenState extends State<SecondOpinionScreen> {
   Future<void> _copy() async {
     await Clipboard.setData(ClipboardData(text: text.text));
     if (mounted) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('Pack copied. Paste it wherever you choose.')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Pack copied. Paste it wherever you choose.'),
+        ),
+      );
     }
   }
 
   Future<void> _open(String target, Uri url) async {
     if (!reviewed) {
       setState(
-        () => error = 'Check every review item first — nothing is sent until you confirm.',
+        () => error =
+            'Check every review item first — nothing is sent until you confirm.',
       );
       return;
     }
@@ -129,8 +132,7 @@ class _SecondOpinionScreenState extends State<SecondOpinionScreen> {
             title: Text(entry.key, style: const TextStyle(fontSize: 13)),
             value: entry.value,
             dense: true,
-            onChanged: (v) =>
-                setState(() => checks[entry.key] = v ?? false),
+            onChanged: (v) => setState(() => checks[entry.key] = v ?? false),
           ),
         if (error != null)
           Padding(
@@ -162,10 +164,8 @@ class _SecondOpinionScreenState extends State<SecondOpinionScreen> {
           children: [
             Expanded(
               child: OutlinedButton.icon(
-                onPressed: () => _open(
-                  'chatgpt',
-                  Uri.parse('https://chatgpt.com/'),
-                ),
+                onPressed: () =>
+                    _open('chatgpt', Uri.parse('https://chatgpt.com/')),
                 icon: const Icon(Icons.open_in_new_outlined),
                 label: const Text('Open ChatGPT'),
               ),
