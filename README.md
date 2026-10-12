@@ -4,15 +4,17 @@ An English-speaking medical companion for Android and iOS, built for a child and
 
 ## First development slice
 
-- Onboarding with age, its reference date, and optional user-provided history.
+- Onboarding with date of birth and optional user-provided history; separate family profiles with editable details.
 - Encrypted original reports and an authenticated encrypted record/search index.
+- Saved conversations and user-stated memory scoped to each profile. Deleting a conversation removes its memory without deleting reports.
 - File or rear-camera report import, with scoped temporary-copy cleanup.
 - Local PDF text extraction and an imported local Gemma 4 vision model for scan/photo transcription; transcripts require review.
 - Local organizer/extractor/summarizer/planner prompts using one assistant model.
-- Clinical-date/category organization, estimated age-at-event labels, and Markdown summaries.
+- Clinical-date/category organization, DOB-based age-at-event labels, and Markdown summaries.
 - Source-page highlights, editable facts, and corrections retained across reprocessing.
 - EmbeddingGemma 2 search through a native bridge, with local keyword search available during setup/failure.
 - A bounded planner that can combine private-record and public-web searches in one answer.
+- Autonomous or user-requested extended thinking for bounded research: the local model plans and assesses up to three rounds/six public searches, then answers locally from collected evidence.
 - Brave Search integration with a key stored in platform secure storage; query-only requests and local result summarization.
 
 This is a development prototype, not a finished medical application. Model quality, clinical accuracy, and performance on the Samsung S24 Ultra still need measurement. Voice, foreground wake word, medicine reminders, de-identified sharing, portable backup/restore, and large-history database optimization remain later work. Current report imports support PDF, PNG/JPG, and UTF-8 text up to 30 MB and 30 PDF pages.
@@ -31,7 +33,9 @@ This build uses development signing. Store distribution and production signing a
 
 In the app's setup screen, choose a local `.litertlm` assistant model and its matching family (scan transcription currently requires a vision-capable Gemma 4), and a local **EmbeddingGemma 2** `.litertlm` file. The app copies weights into its own local storage. Weights are not included in the repository or downloaded by the app. Start with synthetic reports in `docs/eval-fixtures/` and the built-in synthetic text example. The app does not pretend to have AI responses when weights are absent.
 
-Web search is optional for the offline record flow. Configure a Brave Search API key once in settings to let the local planner use it automatically. Without the key or connectivity, web search reports its unavailability; it never becomes cloud inference. Retrieved web content cannot request tool calls. External source links open only when the user taps them.
+Web search is optional for the offline record flow. Configure a Brave Search API key once in settings to let the local planner use it automatically. The planner can choose extended thinking on its own, or the user can request it. A visible status identifies that mode while the assistant checks additional general public sources within a bounded research budget; private records and identifying details remain local. Without the key or connectivity, web search reports its unavailability; it never becomes cloud inference. Retrieved web content cannot request tool calls. External source links open only when the user taps them.
+
+Native conversations, complete turns, profile memory, and originals are saved in the encrypted vault. Each profile remembers its selected conversation when you switch people. There is no fixed conversation-count limit; memory excerpts and model context are bounded separately. Conversation memory contains user-stated context, not verified clinical evidence, and remains separate from report facts. Previous assistant statements cannot become memory used to authorize tools. Legacy age-only profiles keep their approximate age information until the user supplies a date of birth; migration does not invent one. Editing a birth date clears that person's saved report summaries so their age-at-event information can be regenerated.
 
 ## Verification
 
@@ -46,7 +50,7 @@ On macOS they use the installed PDFium package's host framework; on other hosts 
 header with vision available and unavailable, rather than treating a watermark as
 complete report text.
 
-Tests cover authenticated storage, tampering, profile isolation, embedding identity/dimension checks, source validation, correction persistence, age/date organization, web-query filtering, and onboarding/history UI. These checks do not measure real-model medical accuracy.
+Tests cover authenticated storage, tampering, profile/session isolation and deletion, encrypted conversation restoration, user-only contextual recall, embedding identity/dimension checks, source validation, correction persistence, age/date organization, web-query filtering, and onboarding/history UI. These checks do not measure real-model medical accuracy.
 
 [Product brief](docs/product-brief.md) · [Evaluation plan](docs/eval-plan.md) · [Synthetic fixtures](docs/eval-fixtures/manifest.json)
 
@@ -55,6 +59,12 @@ Tests cover authenticated storage, tampering, profile isolation, embedding ident
 A separate entry point reuses the same Flutter screens with in-memory synthetic
 records and clearly labelled sample responses. It does not invoke or upload to
 an AI service. See [preview instructions](lib/preview/README.md).
+
+Use invented details to explore date-of-birth onboarding, multiple profiles,
+saved-conversation controls, and extended-thinking interactions. The browser
+demo keeps data only in memory and resets on reload; its scripted responses
+do not demonstrate encryption, actual EmbeddingGemma search, live web research,
+or local model inference.
 
 ```sh
 flutter build web --target lib/preview/main_preview.dart --no-web-resources-cdn

@@ -18,7 +18,12 @@ List<AgentAction> validateAgentPlan(String text) {
   if (list is! List || list.isEmpty || list.length > 3) {
     throw const FormatException('Invalid action count.');
   }
-  const allowed = {'search_records', 'web_search', 'conversation'};
+  const allowed = {
+    'search_records',
+    'web_search',
+    'conversation',
+    'extended_thinking',
+  };
   final result = <AgentAction>[];
   for (final proposal in list) {
     if (proposal is! Map ||
@@ -30,6 +35,9 @@ List<AgentAction> validateAgentPlan(String text) {
     final query = (proposal['query'] as String).trim();
     if (query.length > 500) {
       throw const FormatException('Tool query is too long.');
+    }
+    if (proposal['action'] == 'extended_thinking' && query.isNotEmpty) {
+      throw const FormatException('Extended thinking takes no query.');
     }
     result.add(AgentAction(proposal['action'], query));
   }

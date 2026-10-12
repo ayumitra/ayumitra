@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:file_picker/file_picker.dart';
 
 import '../app_controller.dart';
+import '../domain/conversations.dart';
 import '../domain/records.dart';
 import '../domain/retrieval.dart';
 
@@ -11,6 +12,7 @@ import '../domain/retrieval.dart';
 /// the web. Scripted responses are always identified as preview examples.
 class DemoController extends AppController {
   int _nextProfile = 0;
+  int _nextConversation = 0;
   final Map<String, Uint8List> _originals = {};
 
   @override
@@ -20,9 +22,13 @@ class DemoController extends AppController {
   Future<void> initialize() async {
     data = const VaultData();
     activeProfileId = null;
+    activeSessionId = null;
     messages.clear();
     _originals.clear();
     failure = null;
+    busy = false;
+    activity = '';
+    extendedThinking = false;
     loaded = true;
     notifyListeners();
   }
@@ -30,23 +36,194 @@ class DemoController extends AppController {
   @override
   Future<void> createProfile(
     String name,
-    int age,
+    DateTime dateOfBirth,
     String history,
     bool isChild,
   ) async {
-    if (name.trim().isEmpty || age < 0 || age > 125) return;
+    if (!_validProfile(name, dateOfBirth)) return;
     final next = Profile(
       id: 'preview-profile-${++_nextProfile}',
       name: name.trim(),
-      age: age,
-      ageRecordedAt: DateTime.now(),
+      dateOfBirth: dateOfBirth,
       history: history.trim(),
       isChild: isChild,
     );
-    data = data.copy(profiles: [...data.profiles, next]);
+    data = data.copy(
+      profiles: [...data.profiles, next],
+      activeProfileId: next.id,
+      clearActiveSession: true,
+    );
     activeProfileId = next.id;
+    activeSessionId = null;
     messages.clear();
     notifyListeners();
+  }
+
+  bool _validProfile(String name, DateTime dob) {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    return name.trim().isNotEmpty &&
+        !dob.isAfter(today) &&
+        dob.year >= today.year - 130;
+  }
+
+  @override
+  Future<void> updateProfile(
+    String id, {
+    required String name,
+    required DateTime dateOfBirth,
+    required String history,
+    required bool isChild,
+  }) async {
+    if (busy || !_validProfile(name, dateOfBirth)) return;
+    data = data.copy(
+      profiles: data.profiles
+          .map(
+            (profile) => profile.id == id
+                ? Profile(
+                    id: id,
+                    name: name.trim(),
+                    dateOfBirth: dateOfBirth,
+                    history: history.trim(),
+                    isChild: isChild,
+                  )
+                : profile,
+          )
+          .toList(),
+    );
+    data = data.copy(
+      reports: data.reports
+          .map(
+            (report) => report.profileId == id
+                ? report.copy(summaryMarkdown: _summary(report))
+                : report,
+          )
+          .toList(),
+    );
+    notifyListeners();
+  }
+
+  @override
+  Future<void> selectProfile(String id) async {
+    if (busy || !data.profiles.any((profile) => profile.id == id)) return;
+    activeProfileId = id;
+    final remembered = data.activeSessionByProfile[id];
+    activeSessionId = sessions.any((session) => session.id == remembered)
+        ? remembered
+        : sessions.firstOrNull?.id;
+    data = data.copy(
+      activeProfileId: id,
+      activeSessionId: activeSessionId,
+      clearActiveSession: activeSessionId == null,
+      activeSessionByProfile: {
+        ...data.activeSessionByProfile,
+        id: ?activeSessionId,
+      },
+    );
+    restoreConversation();
+    failure = null;
+    notifyListeners();
+  }
+
+  ConversationSession _createConversation() {
+    final now = DateTime.now();
+    final session = ConversationSession(
+      id: 'preview-conversation-${++_nextConversation}',
+      profileId: profile!.id,
+      title: 'New conversation',
+      createdAt: now,
+      updatedAt: now,
+    );
+    data = data.copy(
+      sessions: [...data.sessions, session],
+      activeProfileId: profile!.id,
+      activeSessionId: session.id,
+      activeSessionByProfile: {
+        ...data.activeSessionByProfile,
+        profile!.id: session.id,
+      },
+    );
+    activeSessionId = session.id;
+    return session;
+  }
+
+  @override
+  Future<void> newConversation() async {
+    if (busy || profile == null) return;
+    _createConversation();
+    messages.clear();
+    failure = null;
+    notifyListeners();
+  }
+
+  @override
+  Future<void> selectConversation(String id) async {
+    if (busy || !sessions.any((session) => session.id == id)) return;
+    activeSessionId = id;
+    data = data.copy(
+      activeSessionId: id,
+      activeSessionByProfile: {...data.activeSessionByProfile, profile!.id: id},
+    );
+    restoreConversation();
+    failure = null;
+    notifyListeners();
+  }
+
+  @override
+  Future<void> deleteConversation(String id) async {
+    if (busy || !sessions.any((session) => session.id == id)) return;
+    data = data.copy(
+      sessions: data.sessions.where((session) => session.id != id).toList(),
+      memories: data.memories
+          .where((memory) => memory.sessionId != id)
+          .toList(),
+    );
+    if (activeSessionId == id) activeSessionId = sessions.firstOrNull?.id;
+    final selections = {...data.activeSessionByProfile}
+      ..removeWhere((key, value) => value == id);
+    data = data.copy(
+      activeSessionId: activeSessionId,
+      clearActiveSession: activeSessionId == null,
+      activeSessionByProfile: {...selections, profile!.id: ?activeSessionId},
+    );
+    restoreConversation();
+    notifyListeners();
+  }
+
+  void _rememberConversation() {
+    if (profile == null || messages.isEmpty) return;
+    final session = activeSession ?? _createConversation();
+    final now = DateTime.now();
+    final firstUser = messages.where((message) => message.isUser).firstOrNull;
+    final rawTitle =
+        firstUser?.text.replaceAll(RegExp(r'\s+'), ' ').trim() ?? session.title;
+    final next = session.copy(
+      title: rawTitle.length > 64 ? '${rawTitle.substring(0, 61)}…' : rawTitle,
+      updatedAt: now,
+      turns: [
+        for (var i = 0; i < messages.length; i++)
+          ConversationTurn(
+            id: '${session.id}-turn-$i',
+            role: messages[i].isUser ? 'user' : 'assistant',
+            text: messages[i].text,
+            createdAt: i < session.turns.length
+                ? session.turns[i].createdAt
+                : now,
+            reportCitations: messages[i].hits
+                .map((hit) => hit.citation)
+                .toList(),
+          ),
+      ],
+    );
+    data = data.copy(
+      sessions: data.sessions
+          .map((current) => current.id == next.id ? next : current)
+          .toList(),
+      memories: [
+        ...data.memories.where((memory) => memory.sessionId != next.id),
+        buildConversationMemory(next),
+      ],
+    );
   }
 
   @override
@@ -76,6 +253,7 @@ class DemoController extends AppController {
         ),
       );
     }
+    _rememberConversation();
     notifyListeners();
   }
 
@@ -105,6 +283,7 @@ class DemoController extends AppController {
         '“Summarize my medical history”. Everything resets when this page reloads.',
       ),
     );
+    _rememberConversation();
     notifyListeners();
   }
 
@@ -190,6 +369,10 @@ class DemoController extends AppController {
     failure = null;
     messages.add(ChatEntry(question.trim(), isUser: true));
     final text = question.toLowerCase();
+    final automaticResearch = RegExp(
+      r'\b(?:deep research|research thoroughly|thorough research|in.depth research|comprehensive research)\b',
+    ).hasMatch(text);
+    final useExtendedThinking = extendedThinking || automaticResearch;
     if (_isAttachmentCommand(text)) {
       await attachReport();
       return;
@@ -209,6 +392,26 @@ class DemoController extends AppController {
         if (scope != null) break;
       }
     }
+    var recalledConversation = false;
+    if (scope == null && followUp) {
+      // Scripted recall examines only previous user topics in this profile.
+      // The conversation itself never becomes evidence of a medical finding.
+      for (final session in sessions.where(
+        (session) => session.id != activeSessionId,
+      )) {
+        for (final turn in session.turns.reversed.where(
+          (turn) => turn.role == 'user',
+        )) {
+          if (_isAttachmentCommand(turn.text.toLowerCase())) continue;
+          scope = _scopeFor(turn.text.toLowerCase());
+          if (scope != null) {
+            recalledConversation = true;
+            break;
+          }
+        }
+        if (scope != null) break;
+      }
+    }
     final medicine = scope == 'medicine';
     final blood = scope == 'blood';
     final undated = scope == 'undated';
@@ -225,6 +428,32 @@ class DemoController extends AppController {
         .toList();
     final hits = <EvidenceHit>[];
     final content = StringBuffer('**UX preview · scripted response**\n\n');
+    if (useExtendedThinking) {
+      busy = true;
+      activity = 'Preview research · reviewing synthetic sources…';
+      notifyListeners();
+      await Future<void>.delayed(const Duration(milliseconds: 250));
+      activity = 'Preview research · checking dates and source links…';
+      notifyListeners();
+      await Future<void>.delayed(const Duration(milliseconds: 250));
+      content.writeln(
+        '**Extended thinking · scripted review**\n\n'
+        'Checked the available sample reports, clinical dates, and source links. '
+        'No AI model or web search ran.\n',
+      );
+      if (automaticResearch && !extendedThinking) {
+        content.writeln(
+          'Automatically selected for this research request. '
+          'The manual toggle remains off.\n',
+        );
+      }
+    }
+    if (recalledConversation) {
+      content.writeln(
+        'Picked up the topic from an earlier conversation in this profile. '
+        'Remembered conversation is unverified context; the report sources below provide the sample findings.\n',
+      );
+    }
     if (selected.isEmpty) {
       content.write(
         'There are no matching synthetic reports yet. Use the '
@@ -269,7 +498,7 @@ class DemoController extends AppController {
       content.writeln('\n## Open questions\n');
       content.write(
         'Check the original source using the links below. '
-        'Age labels are estimates from the age recorded at onboarding.',
+        'Age at each event uses the profile’s date of birth. Undated reports keep an unknown age.',
       );
       if (medicine || RegExp(r'web|search|explain|used for').hasMatch(text)) {
         content.write(
@@ -280,6 +509,9 @@ class DemoController extends AppController {
       }
     }
     messages.add(ChatEntry(content.toString(), hits: hits));
+    _rememberConversation();
+    busy = false;
+    activity = '';
     notifyListeners();
   }
 
@@ -405,7 +637,9 @@ class DemoController extends AppController {
   }
 
   String _summary(Report report) {
-    final owner = profile!;
+    final owner = data.profiles.firstWhere(
+      (profile) => profile.id == report.profileId,
+    );
     final content = StringBuffer(
       '**Synthetic UX preview · scripted summary**\n\n',
     );

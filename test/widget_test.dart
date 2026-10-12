@@ -5,18 +5,21 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   testWidgets(
-    'Onboarding asks for age and history without cloud mode choices',
+    'Onboarding asks for date of birth and history without cloud mode choices',
     (tester) async {
       final controller = AppController()..loaded = true;
       await tester.pumpWidget(AyumitraApp(controller: controller));
-      expect(find.text('Age in years'), findsOneWidget);
+      expect(find.text('Date of birth'), findsOneWidget);
       expect(find.text('Previous history (optional)'), findsOneWidget);
       expect(find.textContaining('never uploads your reports'), findsOneWidget);
-      await tester.ensureVisible(find.text('Start my history'));
-      await tester.tap(find.text('Start my history'));
+      await tester.ensureVisible(find.text('Meet my companion'));
+      await tester.tap(find.text('Meet my companion'));
       await tester.pump();
       expect(find.text('Enter a name.'), findsOneWidget);
-      expect(find.text('Enter an age from 0 to 125.'), findsOneWidget);
+      expect(
+        find.text('Enter a valid date of birth, not a future date.'),
+        findsOneWidget,
+      );
       expect(tester.takeException(), isNull);
     },
   );

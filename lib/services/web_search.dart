@@ -129,12 +129,52 @@ bool publicQueryAllowed(String query, Profile profile) {
     '',
   );
   if (RegExp(r'\b\d+(?:\.\d+)?\b').hasMatch(withoutPublicNumbers)) return false;
-  final nameParts = profile.name
-      .toLowerCase()
-      .split(RegExp(r'\s+'))
-      .where((x) => x.length >= 3);
-  final words = RegExp(
-    r'[a-z]+',
-  ).allMatches(query.toLowerCase()).map((x) => x.group(0)).toSet();
-  return !nameParts.any(words.contains);
+  final nameParts = _nameWords(profile.name);
+  final words = _nameWords(query);
+  if (nameParts.any(words.contains)) return false;
+  // Also catch spellings that join a full hyphenated/apostrophized name.
+  final compactName = nameParts.join();
+  return compactName.isEmpty || !words.contains(compactName);
+}
+
+/// Same Unicode-aware comparison for names and proposed public queries. Common
+/// Latin accents are folded so José/Jose and decomposed e + accent match too.
+/// Short names are checked as complete tokens, never substrings of drug names.
+List<String> _nameWords(String text) {
+  var folded = text.toLowerCase();
+  const groups = {
+    'àáâãäåāăąǎǻ': 'a',
+    'çćĉċč': 'c',
+    'ďđð': 'd',
+    'èéêëēĕėęě': 'e',
+    'ĝğġģ': 'g',
+    'ĥħ': 'h',
+    'ìíîïĩīĭįıǐ': 'i',
+    'ĵ': 'j',
+    'ķ': 'k',
+    'ĺļľŀł': 'l',
+    'ñńņňŋ': 'n',
+    'òóôõöøōŏőǒǿ': 'o',
+    'ŕŗř': 'r',
+    'śŝşšș': 's',
+    'ţťŧț': 't',
+    'ùúûüũūŭůűųǔǖǘǚǜ': 'u',
+    'ŵ': 'w',
+    'ýÿŷ': 'y',
+    'źżž': 'z',
+  };
+  for (final group in groups.entries) {
+    for (final rune in group.key.runes) {
+      folded = folded.replaceAll(String.fromCharCode(rune), group.value);
+    }
+  }
+  folded = folded
+      .replaceAll('æ', 'ae')
+      .replaceAll('œ', 'oe')
+      .replaceAll('ß', 'ss');
+  folded = folded.replaceAll(RegExp(r'\p{M}', unicode: true), '');
+  return RegExp(
+    r'\p{L}+',
+    unicode: true,
+  ).allMatches(folded).map((match) => match.group(0)!).toList();
 }

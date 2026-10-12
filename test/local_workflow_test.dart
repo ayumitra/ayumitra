@@ -159,10 +159,17 @@ void main() {
   test(
     'Planner resolves followups from user turns and clears context on profile switch',
     () async {
+      final directory = await Directory.systemTemp.createTemp('ayumitra-test-');
+      addTearDown(() async => directory.delete(recursive: true));
       final intelligence = RecordingIntelligence();
       final controller = AppController(intelligence: intelligence)
         ..loaded = true
-        ..activeProfileId = 'a';
+        ..activeProfileId = 'a'
+        ..vault = EncryptedVault(
+          directory: directory,
+          key: await AesGcm.with256bits().newSecretKey(),
+        );
+      addTearDown(controller.dispose);
       controller.data = VaultData(
         profiles: [
           for (final id in ['a', 'b'])
@@ -182,10 +189,9 @@ void main() {
       await controller.ask('And its side effects?');
       expect(intelligence.plannerInputs.last, contains('Tell me about iron'));
       expect(intelligence.plannerInputs.last, isNot(contains('UNTRUSTED')));
-      controller.selectProfile('b');
+      await controller.selectProfile('b');
       await controller.ask('Hello');
       expect(intelligence.plannerInputs.last, isNot(contains('iron')));
-      controller.dispose();
     },
   );
 

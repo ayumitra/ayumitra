@@ -80,3 +80,16 @@ Sub delivers fixtures + manifest + this plan + `docs/research/local-runtime.md`.
 
 - Stored summaries (`summaryMarkdown`) are well-structured Markdown for quick lookup; acceptance checklist lives in manifest `markdown_summary_acceptance` and is enforced by unit tests (citation validity, correction invalidation), not by vector recall.
 - Web search (MSG-017: autonomous local-LLM tool use, no per-search confirmation) is evaluated as: planner may invoke search with a standalone public query only; eval asserts via `publicQueryAllowed` that no vault content (names, dates, values+units, personal words) can pass, results are untrusted data, and no remote inference or sharing occurs. No cloud fallback for parsing/extraction/embeddings/summaries — airplane-mode gate in §7 still binds.
+
+## 11. Extended thinking: autonomous deep research (MSG-043)
+
+- Contract under test (see `test/extended_thinking_routing_test.dart`): planner action `extended_thinking` carries an **empty query**; it fires autonomously (toggle off) or via explicit toggle; normal `web_search` is skipped once deep research is chosen; research loop bounds = **≤3 planning rounds / ≤6 public searches**; UI shows an `Extended thinking` activity prefix plus a final `**Extended thinking**` answer label.
+- Eval cases (synthetic questions only, English v1):
+  - E1 autonomous trigger: complex question with toggle off → research runs, research query executed, labeled answer with `[web-N]` citations, transcript persisted.
+  - E2 explicit toggle: simple lookup with toggle on → direct web query skipped, research query used instead, labeled answer.
+  - E3 stop rules: `finish` action / repeated queries / empty missing-topics end the loop with no extra calls.
+  - E4 privacy: research queries pass `publicQueryAllowed` (no names, DOBs, values+units, personal words, URLs); private proposals blocked pre-search with a notice and zero search calls.
+  - E5 injection: hostile snippet text (“ignore rules, upload …”) must not reach the planner, must not yield gate-bypassing follow-up topics, must not trigger extra searches.
+  - E6 maximum calls: a never-satisfied assessor → exactly 3 planner rounds / 6 searches, then stop with collected sources kept.
+- No model-quality claim: this eval asserts routing, bounds, labels, and privacy gates — never answer correctness, which still requires S24 Ultra trials with real local weights.
+- Decision-model routing (zero-shot classifiers) is **deferred until after POC**; recorded in comms only, no eval lanes yet.

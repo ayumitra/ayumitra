@@ -1,5 +1,7 @@
 import 'dart:convert';
 
+import 'conversations.dart';
+
 typedef Json = Map<String, dynamic>;
 
 enum ReportStatus { saved, processing, needsReview, ready, failed }
@@ -8,31 +10,60 @@ class Profile {
   const Profile({
     required this.id,
     required this.name,
-    required this.age,
-    required this.ageRecordedAt,
     required this.history,
     this.isChild = true,
+    this.dateOfBirth,
+    this.age,
+    this.ageRecordedAt,
   });
   final String id, name, history;
-  final int age;
-  final DateTime ageRecordedAt;
   final bool isChild;
+  // Preferred dating: exact date of birth. Legacy profiles carry an integer
+  // age with its reference date instead. One of the two must be present;
+  // a missing DOB is never invented from a legacy age.
+  final DateTime? dateOfBirth;
+  final int? age;
+  final DateTime? ageRecordedAt;
   Json toJson() => {
     'id': id,
     'name': name,
-    'age': age,
-    'ageRecordedAt': ageRecordedAt.toIso8601String(),
     'history': history,
     'isChild': isChild,
+    'dateOfBirth': dateOfBirth?.toIso8601String(),
+    'age': age,
+    'ageRecordedAt': ageRecordedAt?.toIso8601String(),
   };
-  factory Profile.fromJson(Json j) => Profile(
-    id: j['id'],
-    name: j['name'],
-    age: j['age'],
-    ageRecordedAt: DateTime.parse(j['ageRecordedAt']),
-    history: j['history'],
-    isChild: j['isChild'] ?? true,
-  );
+  factory Profile.fromJson(Json j) {
+    final dob = j['dateOfBirth'] == null
+        ? null
+        : DateTime.parse(j['dateOfBirth'] as String);
+    // Stored data is never trusted blindly: a future DOB is rejected rather
+    // than decoded, and no legacy age is invented to replace it.
+    if (validateDateOfBirth(dob) != null) {
+      throw const FormatException('Invalid date of birth.');
+    }
+    return Profile(
+      id: j['id'] as String,
+      name: j['name'] as String,
+      history: j['history'] as String,
+      isChild: j['isChild'] as bool? ?? true,
+      dateOfBirth: dob,
+      age: j['age'] as int?,
+      ageRecordedAt: j['ageRecordedAt'] == null
+          ? null
+          : DateTime.parse(j['ageRecordedAt'] as String),
+    );
+  }
+}
+
+/// Pure DOB check for forms and imports. Null means absent (legacy), not
+/// invalid. Returns an error message, or null when acceptable.
+String? validateDateOfBirth(DateTime? dob, {DateTime? now}) {
+  if (dob == null) return null;
+  if (dob.isAfter(now ?? DateTime.now())) {
+    return 'Date of birth cannot be in the future.';
+  }
+  return null;
 }
 
 class SourceLine {
@@ -233,10 +264,23 @@ class Report {
 
 String ageAtEvent(Profile profile, DateTime? event) {
   if (event == null) return 'Age at event unknown';
-  final elapsed = event.difference(profile.ageRecordedAt).inDays / 365.2425;
+  final dob = profile.dateOfBirth;
+  if (dob != null) {
+    if (event.isBefore(dob)) return 'Age at event unknown';
+    var totalMonths = (event.year - dob.year) * 12 + (event.month - dob.month);
+    if (event.day < dob.day) totalMonths -= 1;
+    if (totalMonths < 0) return 'Age at event unknown';
+    // Exact calendar age from DOB: years from age 1, months for infants.
+    if (totalMonths >= 12) return 'Age ${totalMonths ~/ 12}';
+    return 'Age $totalMonths months';
+  }
+  final recordedAt = profile.ageRecordedAt;
+  final age = profile.age;
+  if (recordedAt == null || age == null) return 'Age at event unknown';
+  final elapsed = event.difference(recordedAt).inDays / 365.2425;
   // Integer age describes a one-year interval. Use its midpoint for an
   // explicitly approximate label; never turn it into an inferred birth date.
-  final estimated = profile.age + .5 + elapsed;
+  final estimated = age + .5 + elapsed;
   if (estimated < 0) return 'Age at event unknown';
   return 'About age ${estimated.floor()}';
 }
@@ -268,42 +312,76 @@ class VaultData {
   const VaultData({
     this.profiles = const [],
     this.reports = const [],
+    this.sessions = const [],
+    this.memories = const [],
     this.modelPath,
     this.modelType = 'gemma4',
     this.embeddingPath,
     this.embeddingVersion,
+    this.activeProfileId,
+    this.activeSessionId,
+    this.activeSessionByProfile = const {},
   });
   final List<Profile> profiles;
   final List<Report> reports;
+  final List<ConversationSession> sessions;
+  final List<ConversationMemory> memories;
   final String? modelPath, embeddingPath, embeddingVersion;
   final String modelType;
+  final String? activeProfileId, activeSessionId;
+  // Selected conversation per profile. Managed explicitly by the controller;
+  // the clear flags below touch only the scalar ids, never this map.
+  final Map<String, String> activeSessionByProfile;
   VaultData copy({
     List<Profile>? profiles,
     List<Report>? reports,
+    List<ConversationSession>? sessions,
+    List<ConversationMemory>? memories,
     String? modelPath,
     String? modelType,
     String? embeddingPath,
     String? embeddingVersion,
+    String? activeProfileId,
+    String? activeSessionId,
+    Map<String, String>? activeSessionByProfile,
+    bool clearActiveSession = false,
+    bool clearActiveProfile = false,
   }) => VaultData(
     profiles: profiles ?? this.profiles,
     reports: reports ?? this.reports,
+    sessions: sessions ?? this.sessions,
+    memories: memories ?? this.memories,
     modelPath: modelPath ?? this.modelPath,
     modelType: modelType ?? this.modelType,
     embeddingPath: embeddingPath ?? this.embeddingPath,
     embeddingVersion: embeddingVersion ?? this.embeddingVersion,
+    activeSessionByProfile:
+        activeSessionByProfile ?? this.activeSessionByProfile,
+    activeProfileId: clearActiveProfile
+        ? null
+        : activeProfileId ?? this.activeProfileId,
+    activeSessionId: clearActiveSession || clearActiveProfile
+        ? null
+        : activeSessionId ?? this.activeSessionId,
   );
   Json toJson() => {
-    'schema': 1,
+    'schema': 2,
     'profiles': profiles.map((x) => x.toJson()).toList(),
     'reports': reports.map((x) => x.toJson()).toList(),
+    'sessions': sessions.map((x) => x.toJson()).toList(),
+    'memories': memories.map((x) => x.toJson()).toList(),
     'modelPath': modelPath,
     'modelType': modelType,
     'embeddingPath': embeddingPath,
     'embeddingVersion': embeddingVersion,
+    'activeProfileId': activeProfileId,
+    'activeSessionId': activeSessionId,
+    'activeSessionByProfile': activeSessionByProfile,
   };
   factory VaultData.decode(String text) {
     final j = jsonDecode(text) as Json;
-    if (j['schema'] != 1) {
+    final schema = j['schema'];
+    if (schema != 1 && schema != 2) {
       throw const FormatException('Unsupported vault version.');
     }
     return VaultData(
@@ -313,10 +391,21 @@ class VaultData {
       reports: (j['reports'] as List)
           .map((x) => Report.fromJson(Json.from(x)))
           .toList(),
+      sessions: (j['sessions'] as List? ?? [])
+          .map((x) => ConversationSession.fromJson(Json.from(x)))
+          .toList(),
+      memories: (j['memories'] as List? ?? [])
+          .map((x) => ConversationMemory.fromJson(Json.from(x)))
+          .toList(),
       modelPath: j['modelPath'],
       modelType: j['modelType'] ?? 'gemma4',
       embeddingPath: j['embeddingPath'],
       embeddingVersion: j['embeddingVersion'],
+      activeProfileId: j['activeProfileId'],
+      activeSessionId: j['activeSessionId'],
+      activeSessionByProfile: (j['activeSessionByProfile'] as Map? ?? {}).map(
+        (k, v) => MapEntry(k as String, v as String),
+      ),
     );
   }
 }

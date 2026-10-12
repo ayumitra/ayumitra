@@ -8,9 +8,11 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../services/local_file_picker.dart';
 import '../app_controller.dart';
+import '../domain/conversations.dart';
 import '../domain/records.dart';
 import '../domain/retrieval.dart';
 import 'source_screen.dart';
+import 'profiles_screen.dart';
 
 const ink = Color(0xff203f38);
 const canvas = Color(0xfff7f8f2);
@@ -153,15 +155,47 @@ class Onboarding extends StatefulWidget {
 class _OnboardingState extends State<Onboarding> {
   final form = GlobalKey<FormState>();
   final name = TextEditingController(),
-      age = TextEditingController(),
+      birthDate = TextEditingController(),
       history = TextEditingController();
   bool child = true;
   @override
   void dispose() {
     name.dispose();
-    age.dispose();
+    birthDate.dispose();
     history.dispose();
     super.dispose();
+  }
+
+  DateTime? _validatedBirthDate(String value) {
+    try {
+      if (!RegExp(r'^\d{4}-\d{2}-\d{2}$').hasMatch(value.trim())) {
+        return null;
+      }
+      final date = DateFormat('yyyy-MM-dd').parseStrict(value.trim());
+      final now = DateTime.now();
+      final today = DateTime(now.year, now.month, now.day);
+      return date.isAfter(today) || date.year < today.year - 130 ? null : date;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> _chooseBirthDate() async {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final picked = await showDatePicker(
+      context: context,
+      initialDate:
+          _validatedBirthDate(birthDate.text) ??
+          DateTime(now.year - 5, now.month, now.day),
+      firstDate: DateTime(now.year - 130),
+      lastDate: today,
+      helpText: 'Date of birth',
+      initialEntryMode: DatePickerEntryMode.input,
+    );
+    if (picked != null) {
+      birthDate.text = DateFormat('yyyy-MM-dd').format(picked);
+    }
   }
 
   @override
@@ -223,18 +257,22 @@ class _OnboardingState extends State<Onboarding> {
                   ),
                   const SizedBox(height: 12),
                   TextFormField(
-                    controller: age,
-                    keyboardType: TextInputType.number,
-                    decoration: const InputDecoration(
-                      labelText: 'Age in years',
-                      helperText: 'Age is recorded with today’s date.',
+                    controller: birthDate,
+                    keyboardType: TextInputType.datetime,
+                    decoration: InputDecoration(
+                      labelText: 'Date of birth',
+                      hintText: 'YYYY-MM-DD',
+                      helperText:
+                          'Used to show age when each report was recorded.',
+                      suffixIcon: IconButton(
+                        tooltip: 'Choose date of birth',
+                        onPressed: _chooseBirthDate,
+                        icon: const Icon(Icons.calendar_month_outlined),
+                      ),
                     ),
-                    validator: (v) {
-                      final n = int.tryParse(v ?? '');
-                      return n == null || n < 0 || n > 125
-                          ? 'Enter an age from 0 to 125.'
-                          : null;
-                    },
+                    validator: (v) => _validatedBirthDate(v ?? '') == null
+                        ? 'Enter a valid date of birth, not a future date.'
+                        : null,
                   ),
                   const SizedBox(height: 12),
                   TextFormField(
@@ -273,17 +311,37 @@ class _OnboardingState extends State<Onboarding> {
                               if (!form.currentState!.validate()) return;
                               await widget.controller.createProfile(
                                 name.text,
-                                int.parse(age.text),
+                                _validatedBirthDate(birthDate.text)!,
                                 history.text,
                                 child,
                               );
                             },
                       child: const Padding(
                         padding: EdgeInsets.all(12),
-                        child: Text('Start my history'),
+                        child: Text('Meet my companion'),
                       ),
                     ),
                   ),
+                  if (widget.controller.isPreview)
+                    Center(
+                      child: TextButton.icon(
+                        icon: const Icon(Icons.science_outlined, size: 18),
+                        label: const Text('Explore with a sample profile'),
+                        onPressed: widget.controller.busy
+                            ? null
+                            : () async {
+                                await widget.controller.createProfile(
+                                  'Example child',
+                                  DateTime(2021, 4, 18),
+                                  'Synthetic starting history for a UX demonstration.',
+                                  true,
+                                );
+                                await widget.controller.importSample(
+                                  Uint8List(0),
+                                );
+                              },
+                      ),
+                    ),
                   if (widget.controller.failure != null)
                     Padding(
                       padding: const EdgeInsets.only(top: 16),
@@ -315,6 +373,7 @@ class _CompanionScreenState extends State<CompanionScreen> {
   @override
   void dispose() {
     input.dispose();
+    conversationScroll.dispose();
     super.dispose();
   }
 
@@ -360,40 +419,313 @@ class _CompanionScreenState extends State<CompanionScreen> {
       builder: (_) => ReportScreen(controller: c, reportId: r.id),
     ),
   );
-  @override
-  Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(
-      title: Row(
+  final scaffoldKey = GlobalKey<ScaffoldState>();
+  final conversationScroll = ScrollController();
+  String? _renderedSession;
+  int _renderedTurnCount = -1;
+
+  void _closeDrawer() => scaffoldKey.currentState?.closeDrawer();
+
+  Future<void> _newConversation() async {
+    if (c.busy) return;
+    await c.newConversation();
+    if (!mounted) return;
+    input.clear();
+    setState(() => section = 0);
+    _closeDrawer();
+  }
+
+  Future<void> _selectConversation(String id) async {
+    if (c.busy) return;
+    await c.selectConversation(id);
+    if (!mounted) return;
+    input.clear();
+    setState(() => section = 0);
+    _closeDrawer();
+  }
+
+  Future<void> _deleteConversation(ConversationSession session) async {
+    if (c.busy) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Delete this conversation?'),
+        content: Text(
+          '“${session.title}” and its remembered context will be removed. Your reports stay in your history.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Keep conversation'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true) await c.deleteConversation(session.id);
+  }
+
+  Future<void> _manageProfiles() async {
+    _closeDrawer();
+    await Navigator.of(
+      context,
+    ).push(MaterialPageRoute(builder: (_) => ProfilesScreen(controller: c)));
+    if (!mounted) return;
+    input.clear();
+    setState(() {
+      section = 0;
+      category = null;
+      selectedAge = null;
+    });
+  }
+
+  Widget _sidebar() => SafeArea(
+    child: Padding(
+      padding: const EdgeInsets.fromLTRB(14, 20, 14, 14),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Icon(Icons.spa_outlined, color: ink),
-          const SizedBox(width: 10),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text(
-                'Ayumitra',
-                style: TextStyle(fontWeight: FontWeight.w600),
+          const Padding(
+            padding: EdgeInsets.only(left: 10, bottom: 24),
+            child: Row(
+              children: [
+                Icon(Icons.spa_outlined, color: ink),
+                SizedBox(width: 10),
+                Text(
+                  'Ayumitra',
+                  style: TextStyle(
+                    fontSize: 22,
+                    fontWeight: FontWeight.w600,
+                    color: ink,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const Padding(
+            padding: EdgeInsets.only(left: 10, bottom: 8),
+            child: Text(
+              'COMPANION FOR',
+              style: TextStyle(fontSize: 10, letterSpacing: 1.6, color: ink),
+            ),
+          ),
+          DropdownButtonFormField<String>(
+            key: ValueKey(c.activeProfileId),
+            initialValue: c.activeProfileId,
+            isExpanded: true,
+            decoration: const InputDecoration(
+              prefixIcon: Icon(Icons.person_outline),
+              contentPadding: EdgeInsets.symmetric(
+                horizontal: 12,
+                vertical: 12,
               ),
-              Text(
-                '${c.profile!.name}’s companion',
-                style: const TextStyle(fontSize: 12),
-              ),
+            ),
+            items: [
+              for (final profile in c.data.profiles)
+                DropdownMenuItem(
+                  value: profile.id,
+                  child: Text(
+                    profile.name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
             ],
+            onChanged: c.busy
+                ? null
+                : (id) async {
+                    if (id == null) return;
+                    await c.selectProfile(id);
+                    if (!mounted) return;
+                    input.clear();
+                    setState(() {
+                      section = 0;
+                      category = null;
+                      selectedAge = null;
+                    });
+                    _closeDrawer();
+                  },
+          ),
+          TextButton.icon(
+            onPressed: c.busy ? null : _manageProfiles,
+            icon: const Icon(Icons.people_outline, size: 18),
+            label: const Text('Manage profiles'),
+          ),
+          const SizedBox(height: 16),
+          SizedBox(
+            width: double.infinity,
+            child: FilledButton.tonalIcon(
+              onPressed: c.busy ? null : _newConversation,
+              icon: const Icon(Icons.edit_square, size: 19),
+              label: const Text('New conversation'),
+            ),
+          ),
+          const SizedBox(height: 20),
+          const Padding(
+            padding: EdgeInsets.only(left: 10, bottom: 8),
+            child: Text(
+              'CONVERSATIONS',
+              style: TextStyle(fontSize: 10, letterSpacing: 1.6, color: ink),
+            ),
+          ),
+          Expanded(
+            child: c.sessions.isEmpty
+                ? const Padding(
+                    padding: EdgeInsets.all(10),
+                    child: Text(
+                      'Your conversations will appear here.',
+                      style: TextStyle(fontSize: 13, height: 1.5),
+                    ),
+                  )
+                : ListView.builder(
+                    itemCount: c.sessions.length,
+                    itemBuilder: (context, index) {
+                      final session = c.sessions[index];
+                      return Padding(
+                        padding: const EdgeInsets.only(bottom: 4),
+                        child: ListTile(
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(14),
+                          ),
+                          selected:
+                              c.activeSession?.id == session.id && section == 0,
+                          selectedTileColor: const Color(0xffe3eee5),
+                          dense: true,
+                          title: Text(
+                            session.title,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          subtitle: Text(
+                            DateFormat.MMMd().format(session.updatedAt),
+                            style: const TextStyle(fontSize: 11),
+                          ),
+                          onTap: c.busy
+                              ? null
+                              : () => _selectConversation(session.id),
+                          trailing: IconButton(
+                            tooltip: 'Delete conversation',
+                            icon: const Icon(Icons.delete_outline, size: 17),
+                            onPressed: c.busy
+                                ? null
+                                : () => _deleteConversation(session),
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+          ),
+          const Divider(),
+          ListTile(
+            leading: const Icon(Icons.history),
+            title: const Text('Report history'),
+            selected: section == 1,
+            onTap: () {
+              setState(() => section = 1);
+              _closeDrawer();
+            },
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+            child: Text(
+              c.isPreview
+                  ? 'Preview conversations stay in memory until reload.'
+                  : 'Conversations and memories stay encrypted on this device.',
+              style: const TextStyle(fontSize: 11, height: 1.5, color: ink),
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
+
+  @override
+  Widget build(BuildContext context) => LayoutBuilder(
+    builder: (context, constraints) {
+      if (section == 0 &&
+          (_renderedSession != c.activeSession?.id ||
+              _renderedTurnCount != c.messages.length)) {
+        _renderedSession = c.activeSession?.id;
+        _renderedTurnCount = c.messages.length;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted && conversationScroll.hasClients) {
+            conversationScroll.jumpTo(
+              conversationScroll.position.maxScrollExtent,
+            );
+          }
+        });
+      }
+      final desktop = constraints.maxWidth >= 980;
+      if (!desktop) return _workspace(false);
+      return Row(
+        children: [
+          SizedBox(
+            width: 280,
+            child: ColoredBox(
+              color: const Color(0xffeff2eb),
+              child: _sidebar(),
+            ),
+          ),
+          const VerticalDivider(width: 1),
+          Expanded(child: _workspace(true)),
+        ],
+      );
+    },
+  );
+
+  Widget _workspace(bool desktop) => Scaffold(
+    key: scaffoldKey,
+    drawer: desktop
+        ? null
+        : Drawer(backgroundColor: const Color(0xffeff2eb), child: _sidebar()),
+    appBar: AppBar(
+      automaticallyImplyLeading: !desktop,
+      title: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            section == 1
+                ? 'Report history'
+                : c.activeSession?.title ?? 'New conversation',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
+          ),
+          Text(
+            '${c.profile!.name}’s companion',
+            style: const TextStyle(fontSize: 12),
           ),
         ],
       ),
       actions: [
+        if (!desktop)
+          IconButton(
+            tooltip: 'New conversation',
+            onPressed: c.busy ? null : _newConversation,
+            icon: const Icon(Icons.edit_square),
+          ),
         IconButton(
-          tooltip: c.isPreview
-              ? 'About this preview'
-              : 'Model and search settings',
+          tooltip: c.isPreview ? 'About this preview' : 'Companion settings',
           onPressed: c.busy
               ? null
-              : () => Navigator.of(context).push(
-                  MaterialPageRoute(
-                    builder: (_) => SettingsScreen(controller: c),
-                  ),
-                ),
+              : () async {
+                  final previousProfile = c.activeProfileId;
+                  await Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => SettingsScreen(controller: c),
+                    ),
+                  );
+                  if (!mounted || previousProfile == c.activeProfileId) return;
+                  input.clear();
+                  setState(() {
+                    section = 0;
+                    category = null;
+                    selectedAge = null;
+                  });
+                },
           icon: const Icon(Icons.tune),
         ),
       ],
@@ -411,16 +743,14 @@ class _CompanionScreenState extends State<CompanionScreen> {
                 ),
                 child: Row(
                   children: [
-                    const Icon(Icons.lock_outline, size: 15, color: ink),
+                    const Icon(Icons.lock_outline, size: 14, color: ink),
                     const SizedBox(width: 8),
                     Expanded(
                       child: Text(
                         c.isPreview
                             ? 'Synthetic session · Sample responses'
-                            : c.embeddings.available
-                            ? 'Private search on-device · EmbeddingGemma 2'
-                            : 'Private records on-device · models need setup',
-                        style: const TextStyle(fontSize: 12, color: ink),
+                            : 'Your private companion · AI stays on this device',
+                        style: const TextStyle(fontSize: 11, color: ink),
                       ),
                     ),
                   ],
@@ -450,17 +780,22 @@ class _CompanionScreenState extends State<CompanionScreen> {
         ),
       ),
     ),
-    bottomNavigationBar: NavigationBar(
-      selectedIndex: section,
-      onDestinationSelected: (v) => setState(() => section = v),
-      destinations: const [
-        NavigationDestination(
-          icon: Icon(Icons.chat_bubble_outline),
-          label: 'Companion',
-        ),
-        NavigationDestination(icon: Icon(Icons.history), label: 'History'),
-      ],
-    ),
+    bottomNavigationBar: desktop
+        ? null
+        : NavigationBar(
+            selectedIndex: section,
+            onDestinationSelected: (value) => setState(() => section = value),
+            destinations: const [
+              NavigationDestination(
+                icon: Icon(Icons.chat_bubble_outline),
+                label: 'Companion',
+              ),
+              NavigationDestination(
+                icon: Icon(Icons.history),
+                label: 'History',
+              ),
+            ],
+          ),
   );
 
   Widget _conversation() {
@@ -470,7 +805,7 @@ class _CompanionScreenState extends State<CompanionScreen> {
         children: [
           const SizedBox(height: 32),
           Text(
-            'Hello, ${c.profile!.name}.',
+            'How can I help today?',
             style: const TextStyle(
               fontSize: 30,
               color: ink,
@@ -479,7 +814,7 @@ class _CompanionScreenState extends State<CompanionScreen> {
           ),
           const SizedBox(height: 12),
           const Text(
-            'Keep your story here. Ask a question, add a report, or look back at what changed.',
+            'Talk through a question, make sense of a report, or pick up where we left off. I’m here with your health history when you need it.',
             style: TextStyle(fontSize: 17, height: 1.6),
           ),
           const SizedBox(height: 28),
@@ -523,7 +858,8 @@ class _CompanionScreenState extends State<CompanionScreen> {
       );
     }
     return ListView.builder(
-      padding: const EdgeInsets.all(16),
+      controller: conversationScroll,
+      padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
       itemCount: c.messages.length,
       itemBuilder: (context, index) {
         final message = c.messages[index];
@@ -533,10 +869,14 @@ class _CompanionScreenState extends State<CompanionScreen> {
               : Alignment.centerLeft,
           child: Container(
             margin: const EdgeInsets.only(bottom: 16),
-            padding: const EdgeInsets.all(18),
-            constraints: const BoxConstraints(maxWidth: 680),
+            padding: message.isUser
+                ? const EdgeInsets.all(16)
+                : const EdgeInsets.symmetric(vertical: 12),
+            constraints: const BoxConstraints(maxWidth: 700),
             decoration: BoxDecoration(
-              color: message.isUser ? const Color(0xffe4eee5) : Colors.white,
+              color: message.isUser
+                  ? const Color(0xffe4eee5)
+                  : Colors.transparent,
               borderRadius: BorderRadius.circular(20),
             ),
             child: Column(
@@ -643,32 +983,69 @@ class _CompanionScreenState extends State<CompanionScreen> {
           SourceScreen(controller: c, report: hit.report, line: hit.line),
     ),
   );
-  Widget _composer() => Padding(
-    padding: const EdgeInsets.fromLTRB(12, 4, 12, 12),
-    child: Row(
-      crossAxisAlignment: CrossAxisAlignment.end,
+  Widget _composer() => Container(
+    margin: const EdgeInsets.fromLTRB(14, 4, 14, 14),
+    padding: const EdgeInsets.fromLTRB(8, 8, 8, 6),
+    decoration: BoxDecoration(
+      color: Colors.white,
+      borderRadius: BorderRadius.circular(24),
+      border: Border.all(color: const Color(0xffdfe7dd)),
+    ),
+    child: Column(
+      mainAxisSize: MainAxisSize.min,
       children: [
-        IconButton(
-          tooltip: c.isPreview ? 'Add a synthetic report' : 'Attach a report',
-          onPressed: c.busy ? null : attach,
-          icon: const Icon(Icons.add_circle_outline),
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: [
+            IconButton(
+              tooltip: c.isPreview
+                  ? 'Add a synthetic report'
+                  : 'Attach a report',
+              onPressed: c.busy ? null : attach,
+              icon: const Icon(Icons.add_circle_outline),
+            ),
+            Expanded(
+              child: TextField(
+                controller: input,
+                minLines: 1,
+                maxLines: 5,
+                enabled: !c.busy,
+                decoration: const InputDecoration(
+                  hintText: 'Talk to Ayumitra…',
+                  fillColor: Colors.white,
+                ),
+                textInputAction: TextInputAction.send,
+                onSubmitted: (_) => _send(),
+              ),
+            ),
+            const SizedBox(width: 4),
+            IconButton.filled(
+              tooltip: 'Send message',
+              onPressed: c.busy ? null : _send,
+              icon: const Icon(Icons.arrow_upward),
+            ),
+          ],
         ),
-        Expanded(
-          child: TextField(
-            controller: input,
-            minLines: 1,
-            maxLines: 5,
-            enabled: !c.busy,
-            decoration: const InputDecoration(hintText: 'Ask Ayumitra…'),
-            textInputAction: TextInputAction.send,
-            onSubmitted: (_) => _send(),
+        Align(
+          alignment: Alignment.centerLeft,
+          child: Padding(
+            padding: const EdgeInsets.only(left: 8, top: 2),
+            child: Tooltip(
+              message: c.isPreview
+                  ? 'Show a scripted research example. No model or web calls.'
+                  : 'Give the local assistant more time to work through your question.',
+              child: FilterChip(
+                avatar: const Icon(Icons.psychology_outlined, size: 17),
+                label: const Text(
+                  'Extended thinking',
+                  style: TextStyle(fontSize: 12),
+                ),
+                selected: c.extendedThinking,
+                onSelected: c.busy ? null : c.setExtendedThinking,
+                visualDensity: VisualDensity.compact,
+              ),
+            ),
           ),
-        ),
-        const SizedBox(width: 8),
-        FilledButton(
-          onPressed: c.busy ? null : _send,
-          style: FilledButton.styleFrom(padding: const EdgeInsets.all(16)),
-          child: const Icon(Icons.arrow_upward, semanticLabel: 'Send message'),
         ),
       ],
     ),
@@ -1015,28 +1392,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 applicationName: 'Ayumitra',
               ),
             ),
-            const Text(
-              'Profiles',
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
-            ),
-            RadioGroup<String>(
-              groupValue: c.activeProfileId,
-              onChanged: (v) {
-                if (!c.busy && v != null) {
-                  c.selectProfile(v);
-                  Navigator.pop(context);
-                }
-              },
-              child: Column(
-                children: [
-                  for (final profile in c.data.profiles)
-                    RadioListTile<String>(
-                      title: Text(profile.name),
-                      value: profile.id,
-                      enabled: !c.busy,
-                    ),
-                ],
+            ListTile(
+              leading: const Icon(Icons.people_outline),
+              title: const Text('Profiles and family'),
+              subtitle: const Text(
+                'Add a profile or update your starting history.',
               ),
+              onTap: c.busy
+                  ? null
+                  : () => Navigator.of(context).push(
+                      MaterialPageRoute(
+                        builder: (_) => ProfilesScreen(controller: c),
+                      ),
+                    ),
             ),
           ],
         ),

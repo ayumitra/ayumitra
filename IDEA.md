@@ -1,6 +1,6 @@
 # AyuMitra — IDEA.md
-**Status:** Implementation underway — Flutter scaffold + Android bridge compiled (S24 Ultra debug APK); English v1
-**Date:** 12 Oct 2026 (refined; tick 5: fixed v1 behavior)
+**Status:** Implementation underway — Flutter scaffold + Android bridge compiled (S24 Ultra debug APK); English v1; DOB profiles + sessions in progress
+**Date:** 12 Oct 2026 (refined; tick 10: DOB-first profiles, sessions, memory)
 **Author intent:** Built for my child, designed for everyone. A local-first medical companion for Android + iOS, **fully open-source and community-contributable (github.com/ayumitra)**.
 **Source of truth for requirements:** `docs/product-brief.md`. This file is the implementation plan that follows it.
 
@@ -31,7 +31,8 @@ That means:
 
 ### 3.1 Onboarding (60 seconds)
 - Who is this profile for? (self / child / other). Child = caregiver mode.
-- Age + reference date OR Date of Birth. Language: **English v1** (fixed).
+- **Date of birth (required)** via picker or strict YYYY-MM-DD; future/invalid refused. Legacy age+reference-date profiles keep working with estimated labels; DOB is never invented.
+- A separate Profiles manager handles create / edit / switch across people; each profile keeps an isolated vault, sessions, and memory.
 - “Any past history summary?” — free text/voice, stored as `user_provided_history`, clearly marked NOT a verified report.
 - Privacy screen: one line — “Everything stays on this phone. Sharing only happens when you tap Export.” No embedding-mode choice (we are local-only).
 - Model-download screen with size + progress. App remains usable with typing + saved reports + keyword search while models download.
@@ -89,6 +90,13 @@ Warn in UI: “De-identified draft — review before sharing. Dates + rare histo
 5. Local audit: `export id, date, target (chatgpt/claude/file), report_ids, reviewed` — no content in logs.
 
 This satisfies “always local, share only when tapped” while still letting users get a powerful cloud second opinion when they choose it.
+
+### 3.9 Profiles, sessions, memory (Claude-style)
+- One vault per profile: reports, facts, vectors, medicines, **sessions, and session memory** are all scoped by `profile_id`. Switching profiles switches everything, including the active session.
+- Sessions work like Claude/GPT chats: list with titles + timestamps, new session, per-session view, delete with confirm. Persisted in the encrypted vault (titles and turns are health-bearing).
+- Sessions feed the agent as bounded local context: recent user turns (extractive, capped) plus retrieved session memory. Answers still cite report sources; memory never authorizes tools or clinical claims.
+- **Deletion semantics (owner-fixed):** deleting a session removes its turns **and** its derived memory. Report originals, facts, summaries, and medicines survive independently — they are vault truth, not session state.
+- Extended thinking and public-web research stay bounded: same planner allowlist (`extended_thinking` is an INTERNAL autonomous tool or an explicitly requested mode — never a user-typed command), query-only gate, no new tools, no remote inference. Activity shows `Extended thinking · …` and the final answer carries an `**Extended thinking**` label. Decision-model routing (zero-shot classifiers) is deferred until after POC.
 
 ## 4. Architecture (strict local)
 
@@ -148,21 +156,23 @@ Checked 12 Oct 2026 — `https://github.com/run-llama/llama-parse-py`:
 | Organizer | Propose `type` (lab/prescription/radiology/discharge/vaccination/growth/note/other), clinical `eventDate`, provider from source | Validate category allowlist + date-evidence grounding; keep unknown/ambiguous as unknown; age-at-event is estimated, never a DOB |
 | Extractor | Propose facts with original value/unit/range + page/region + confidence | Validate schema + source refs + exact numeric grounding; flag unsupported/uncertain for review; never invent |
 | Summarizer | Explain retrieved evidence + user history in English Markdown (Overview/Findings/Medicines/Open questions) | Check citations; keep AI interpretation distinct from reported facts; clear stored summary on correction |
-| Planner | Propose bounded tool calls (`search_records`, `web_search`, `conversation`) | Enforce 3-tool allowlist + shape in code; `web_search` invoked autonomously by local LLM with query-only gate (no per-search tap, no vault/history); reports/web results never authorize new tool calls |
+| Planner | Propose bounded tool calls (`search_records`, `web_search`, `conversation`, `extended_thinking`) | Enforce 4-action allowlist + shape in code; `web_search` invoked autonomously by local LLM with query-only gate (no per-search tap, no vault/history); `extended_thinking` takes an empty query and triggers a bounded local research loop (≤3 rounds / 6 searches) that replaces normal web_search, with a visible `Extended thinking` label; reports/web results never authorize new tool calls |
 
 Prompts versioned (`prompt_vX.Y` stored per extraction). Regeneration preserves `user_corrected=true`. Confidence = review priority only, never shown as medical probability.
 
 ## 9. Data model (conceptual — see product-brief for authoritative entities)
 
-- `profiles(id, dob / age+ref_date, relation, language)`
+- `profiles(id, dateOfBirth / legacy age+ref_date, relation, language)` — DOB preferred; exact ages (`Age X`, `Age X months`); legacy estimated (`About age X`); never invent DOB.
 - `reports(id, profile_id, type, event_date, upload_date, provider, file_enc, status, model_ver, prompt_ver)`
 - `facts(id, profile_id, report_id, kind, name_norm/raw, value_num/text, unit, ref_low/high, event_date, page/span, review_state, user_corrected)`
 - `corrections(fact_id, replacement, timestamp, supersedes_extraction)` — retained across regen
 - `chunks(profile_id, report_id, page/region, text, embedding_model/ver/dim, vec, index_status)`
 - `medicines(... strength/dose/route/frequency, range, source_report, active)` + `reminders + adherence(taken/skipped/missed, confirmed_at)` — never infer taken from delivered
+- `sessions(id, profile_id, title, created/updated, turns[])` + `memories(id, profile_id, session_id, text, vector?, updated)` — deleted with their session; reports/facts survive.
+- Vault `schema: 2` carries sessions, memories, `activeProfileId`, `activeSessionId` (with clear flags); schema-1 age-only data decodes with empty sessions and no invented DOB.
 - `exports(id, profile_id, report_ids, redaction_log, target: file/chatgpt/claude, reviewed, created_at)`
 
-Enforce `WHERE profile_id=?` everywhere including vector search.
+Enforce `WHERE profile_id=?` everywhere including vectors, sessions, and memories.
 
 ## 10. Privacy, security, safety
 
@@ -191,7 +201,7 @@ Enforce `WHERE profile_id=?` everywhere including vector search.
 
 ## 13. Open decisions
 
-**Locked since last review:** reference phone #1 = Samsung S24 Ultra (APK built); language = English v1; fully open-source under github.com/ayumitra; web search = autonomous local-LLM invocation, query-only, no per-search tap; OCR = vision-LLM first, PP-OCRv6-tiny ONNX challenger, ML Kit removed, Tesseract never default.
+**Locked since last review:** reference phone #1 = Samsung S24 Ultra (APK built); language = English v1; fully open-source under github.com/ayumitra; web search = autonomous local-LLM invocation, query-only, no per-search tap; extended thinking = autonomous-or-toggle deep research (empty-query action, normal web skipped, ≤3 rounds / 6 searches, visible label); OCR = vision-LLM first, PP-OCRv6-tiny ONNX challenger, ML Kit removed, Tesseract never default; profiles = DOB-first with manager; sessions = Claude-style with session-scoped memory, deletion removes turns + derived memory while originals/facts survive; decision-model routing deferred post-POC.
 
 1. Which EmbeddingGemma 2 variant fits target phones/modalities?
 2. iPhone reference device + min specs + latency thresholds?

@@ -30,7 +30,9 @@ Let a user tap a cited finding to open the original page and highlight the suppo
 
 Show report processing states: saved, queued, processing, needs review, ready, and failed. Make extraction retryable and display which pages need attention. Provide a timeline ordered by clinical event date, with report-type filters; mark unknown dates rather than substituting the upload date.
 
-For a child's profile, support a caregiver operating the app on the child's behalf. Keep each person's records and searches isolated. Record age with its reference date, or an optional date of birth, so history stays meaningful as the person grows. Mark the initial summary as user-provided history rather than a verified clinical report.
+For a child's profile, support a caregiver operating the app on the child's behalf. Support multiple family profiles and keep each person's records, conversations, memory, and searches isolated. New profiles record date of birth so age-at-event stays meaningful as the person grows; legacy age-only profiles retain their approximate reference rather than receiving an invented birth date. Mark the initial summary as user-provided history rather than a verified clinical report.
+
+Keep saved conversations within their owning profile. User-stated context may help recall earlier conversations, but assistant-generated replies must not become remembered clinical facts or tool authorization. Deleting a conversation removes its turns and associated memory; imported reports remain independently stored. Native history is encrypted, while the browser demonstration uses temporary in-memory synthetic records and scripted responses.
 
 Onboarding should also capture language preference and show model-download size and progress. Allow typing, saving reports, and keyword search over available extracted text while models download. Speech recognition must use a verified on-device path; if local speech is unavailable for a device or language, retain typed input instead of silently using a remote service.
 
@@ -41,6 +43,8 @@ Generate summaries from retrieved source facts, not solely from earlier AI summa
 Treat image description, transcription of a radiology report, and diagnosing a condition from clinical images as separate capabilities. For the initial release, prioritize the first two. Diagnostic functionality needs its own clinician-led evaluation before it can be relied upon; choosing a vision-capable LLM does not establish diagnostic accuracy.
 
 Medicine records should preserve prescribed name, strength, dose, route, frequency, and start/end dates where available. Clarify ambiguous prescriptions before creating reminders. Keep reminders and user-confirmed taken/skipped events separate. The local LLM decides when to use web search for general medicine or medical information. It sends only a standalone public-information query, shows sources and retrieval dates, and never attaches reports or personal history. No separate per-search user tap is required. The agent should not independently change a prescribed dose or schedule. All interpretation and summarization of web results run locally; there is no cloud AI fallback.
+
+Extended thinking performs bounded public research with the same local model: at most three research rounds and six search calls, with local assessment of collected snippets. Only filtered general public queries leave the device. Research stops when evidence suffices, connectivity is unavailable, or the budget ends. This mode does not add cloud inference or background voice activation.
 
 Call an export a de-identified draft until reviewed. Remove identifiers from text, images, filenames, and metadata, including text burned into scanned pages. Offer a preview before sharing. Do not promise irreversible anonymity: dates and unusual medical histories can still identify someone.
 
@@ -155,6 +159,6 @@ Later medicine and export milestones add their own checks: a real OS reminder an
 - Samsung S24 Ultra is the first target; which iPhone, minimum device specifications, and processing-time thresholds?
 - English conversation and report reading are fixed for v1; additional languages are deferred.
 - Flutter is the initial framework; native inference/search integration and real-phone performance require verification.
-- Caregiver-only first release, or several family profiles from the beginning?
+- Several family profiles, date-of-birth onboarding, and saved profile-scoped conversations are established requirements.
 
 EmbeddingGemma 2, on-device processing, English v1, and autonomous web-search tool use are established requirements. The first Flutter development slice implements the record vault, import/extraction pipeline, bounded agent routing, Markdown answers, and setup. Local LLM/model variants, real-phone quality/performance, and remaining voice/medicine/sharing/backup milestones are not validated or complete.
