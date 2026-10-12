@@ -139,7 +139,10 @@ void main() {
       expect(webSearch.queries, ['amoxicillin side effects']);
       expect(intelligence.researchPlannerInputs, hasLength(1));
       expect(intelligence.assessorInputs, hasLength(1));
-      expect(intelligence.summaryInputs.single, contains('web-1'));
+      expect(
+        intelligence.summaryInputs.single,
+        contains('https://example.org/provider-1'),
+      );
 
       // Visible activity surfaced through the listener during the run.
       expect(activities.any((a) => a.startsWith('Extended thinking')), isTrue);
@@ -166,6 +169,35 @@ void main() {
       );
     },
   );
+
+  test('short aliases resolve to canonical IDs before persistence', () async {
+    // Live-model shape: cites [S1] instead of the long canonical ID.
+    intelligence
+      ..plannerResponse = '{"action":"extended_thinking","query":""}'
+      ..researchPlans = [
+        '{"actions":[{"action":"web_search","query":"amoxicillin side effects"}]}',
+      ]
+      ..assessorResponse = '{"missingTopics":[]}'
+      ..summaryResponse = 'General information, see [S1].';
+    webSearch.scripted = [_publicSource('provider-1')];
+
+    await controller.ask('Research amoxicillin side effects in depth');
+
+    // Prompt source IDs are short; the canonical mapping stays local.
+    expect(intelligence.summaryInputs.single, contains('"sourceId":"S1"'));
+    expect(
+      intelligence.summaryInputs.single,
+      contains('https://example.org/provider-1'),
+    );
+    // The persisted answer carries the resolved canonical ID, so
+    // existing source links keep working; the raw alias never persists.
+    expect(intelligence.summaryInputs.single, isNot(contains('web-1')));
+    final finalMessage = controller.messages.last;
+    expect(finalMessage.text, contains('[web-1]'));
+    expect(finalMessage.text, isNot(contains('[S1]')));
+    final saved = await vault.read();
+    expect(saved.sessions.single.turns.last.text, contains('[web-1]'));
+  });
 
   test('explicit toggle sends simple lookups to deep research instead', () async {
     controller.setExtendedThinking(true);
@@ -246,14 +278,15 @@ void main() {
       // so the round-2 discovery is included and the middle is dropped.
       final summaryInput = jsonDecode(intelligence.summaryInputs.single) as Map;
       final shownIds = (summaryInput['webSources'] as List)
-          .map((s) => (s as Map)['id'] as String)
+          .map((s) => (s as Map)['url'] as String)
           .toList();
       expect(shownIds, hasLength(8));
-      expect(shownIds, containsAll(['web-1', 'web-2', 'web-11']));
-      expect(shownIds, contains('web-10'));
-      expect(shownIds, isNot(contains('web-3')));
-      expect(shownIds, isNot(contains('web-4')));
-      expect(shownIds, isNot(contains('web-5')));
+      expect(shownIds, [
+        'https://example.org/label-1',
+        'https://example.org/label-2',
+        for (var i = 1; i <= 5; i++) 'https://example.org/warn-$i',
+        'https://example.org/important-new',
+      ]);
       expect(
         (summaryInput['webSources'] as List).any(
           (s) => ((s as Map)['url'] as String).contains('important-new'),
@@ -262,7 +295,10 @@ void main() {
       );
       // The cited follow-up source is accepted; an omitted middle source
       // cannot be claimed against the same allowed set.
-      final allowed = {...shownIds};
+      final allowed = controller.messages.last.web
+          .where((source) => shownIds.contains(source.url.toString()))
+          .map((source) => source.id)
+          .toSet();
       expect(validCitations('Guidance [web-11].', allowed), isTrue);
       expect(validCitations('Guidance [web-4].', allowed), isFalse);
       final finalMessage = controller.messages.last;

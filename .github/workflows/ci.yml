@@ -30,8 +30,8 @@ jobs:
       - name: Resolve locked dependencies
         run: flutter pub get --enforce-lockfile
       - name: Check formatting
-        run: dart format --output=none --set-exit-if-changed lib test
+        run: dart format --output=none --set-exit-if-changed lib test checks
       - name: Analyze
         run: flutter analyze
       - name: Test
-        run: flutter test
+        run: flutter test test checks/preview_workflow_test.dart

@@ -67,6 +67,8 @@ List<EvidenceHit> retrieve({
   final all = <EvidenceHit>[];
   for (final report in reports.where((r) => r.profileId == profileId)) {
     for (final line in report.lines) {
+      // Empty rows mark unreadable pages; they are not evidence for an answer.
+      if (line.text.trim().isEmpty) continue;
       final correctedFacts = report.facts.where(
         (f) => f.sourceLineId == line.id && f.corrected,
       );

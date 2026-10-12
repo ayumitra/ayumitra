@@ -395,7 +395,11 @@ void main() {
         final mems = summaryInput['userStatedConversationMemories'] as List;
         expect(mems, hasLength(1));
         final mem = mems.single as Map;
-        expect(mem['sourceId'], 'conversation:$originId');
+        expect(mem['sourceId'], 'S1');
+        expect(
+          jsonEncode(summaryInput),
+          isNot(contains('conversation:$originId')),
+        );
         expect(mem['text'] as String, contains('SYNTHETIC_LATER_MARKER'));
         expect(mem['text'] as String, contains('User turn '));
         expect((mem['text'] as String).length, lessThanOrEqualTo(1000));

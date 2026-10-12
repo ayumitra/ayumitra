@@ -2,7 +2,7 @@
 {{flutter_build_config}}
 
 // Renderer files are served beside the app. This preview does not require a
-// renderer CDN, remote fonts, analytics, or any inference service.
+// renderer CDN, remote fonts, analytics, or cloud inference service.
 _flutter.loader.load({
   config: {
     canvasKitBaseUrl: "canvaskit/",

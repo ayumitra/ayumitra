@@ -54,21 +54,27 @@ Tests cover authenticated storage, tampering, profile/session isolation and dele
 
 [Product brief](docs/product-brief.md) · [Evaluation plan](docs/eval-plan.md) · [Synthetic fixtures](docs/eval-fixtures/manifest.json)
 
-## Browser UX preview
+## Local browser client
 
-A separate entry point reuses the same Flutter screens with in-memory synthetic
-records and clearly labelled sample responses. It does not invoke or upload to
-an AI service. See [preview instructions](lib/preview/README.md).
+The browser reuses the mobile screens and real processing prompts. It starts
+empty and uses verified installed models on this computer through a loopback
+Ollama-compatible server. Cloud models and redirects are refused. It never
+downloads weights or calls cloud AI. See [setup](lib/preview/README.md).
 
-Use invented details to explore date-of-birth onboarding, multiple profiles,
-saved-conversation controls, and extended-thinking interactions. The browser
-demo keeps data only in memory and resets on reload; its scripted responses
-do not demonstrate encryption, actual EmbeddingGemma search, live web research,
-or local model inference.
+Use synthetic reports first to test DOB profiles, conversations, source links,
+corrections, and memory deletion. Bundled PDFium reads digital PDFs locally;
+image pages are rendered before optional local vision transcription. Scans and
+sparse text layers require review against the original.
+
+Reports and conversations stay in tab memory and clear on reload. This client
+does not provide native encrypted persistence. Public web research is currently
+disabled here; the mobile assistant has its separately configured search tool.
+Second-opinion drafts require review before copying. Opening a provider opens
+only its homepage; Ayumitra never submits the draft.
 
 ```sh
 flutter build web --target lib/preview/main_preview.dart --no-web-resources-cdn
 ```
 
-The preview tests interaction design; it does not measure local model or camera
-quality on a phone.
+The client tests desktop behavior with local weights. Model quality, offline
+operation, camera handling, and performance still need phone trials.

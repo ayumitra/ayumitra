@@ -341,3 +341,5 @@ Current inventory: **129 resolved Dart/Flutter packages**.
 | [xdg_directories](https://pub.dev/packages/xdg_directories/versions/1.1.0) | 1.1.0 | BSD-3-Clause |
 | [xml](https://pub.dev/packages/xml/versions/7.0.1) | 7.0.1 | MIT |
 | [yaml](https://pub.dev/packages/yaml/versions/3.1.4) | 3.1.4 | MIT |
+
+The timeout regression tests declare the already-locked fake_async 1.3.3 as a direct development dependency. No runtime package or model weight was added for this change.

@@ -1191,6 +1191,102 @@ class _SettingsScreenState extends State<SettingsScreen> {
   final visionModelInput = TextEditingController();
   final embeddingModelInput = TextEditingController();
   String family = 'gemma4';
+  bool checkingModels = false;
+  bool modelFieldsInitialized = false;
+  String? modelError;
+  List<LocalModelInfo> localModels = const [];
+
+  Future<void> _findLocalModels() async {
+    if (checkingModels || widget.controller.busy) return;
+    setState(() {
+      checkingModels = true;
+      modelError = null;
+    });
+    try {
+      final intel = widget.controller.intelligence;
+      if (intel is! WebIntelligence) return;
+      final found = await intel.discoverInstalledModels(
+        endpoint: endpointInput.text.trim(),
+      );
+      if (!mounted) return;
+      setState(() => localModels = found);
+      if (found.isEmpty) {
+        setState(
+          () => modelError =
+              'No installed local models were found. Your reports can still use keyword search.',
+        );
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(
+          () => modelError =
+              'The local model server could not be reached or verified. Check its address and that it is running on this computer.',
+        );
+      }
+    } finally {
+      if (mounted) setState(() => checkingModels = false);
+    }
+  }
+
+  Widget? _modelMenu(TextEditingController controller) {
+    if (localModels.isEmpty) return null;
+    return PopupMenuButton<String>(
+      tooltip: 'Choose an installed model',
+      enabled: !checkingModels && !widget.controller.busy,
+      onSelected: (name) => controller.text = name,
+      itemBuilder: (_) => localModels
+          .map((m) => PopupMenuItem(value: m.name, child: Text(m.name)))
+          .toList(),
+      icon: const Icon(Icons.arrow_drop_down),
+    );
+  }
+
+  Future<void> _connectLocalModels(
+    WebIntelligence intel,
+    WebEmbeddings embed,
+  ) async {
+    if (checkingModels || widget.controller.busy) return;
+    setState(() {
+      checkingModels = true;
+      modelError = null;
+    });
+    try {
+      // A saved name alone is not proof that weights are local or available.
+      final endpoint = endpointInput.text.trim();
+      await intel.connect(
+        endpoint: endpoint,
+        chatModel: chatModelInput.text.trim(),
+        visionModel: visionModelInput.text.trim(),
+      );
+      await embed.connect(
+        endpoint: endpoint,
+        embeddingModel: embeddingModelInput.text.trim(),
+      );
+      widget.controller.refreshViews();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              intel.available || embed.available
+                  ? 'Selected models verified on this computer.'
+                  : 'No AI model selected. Keyword search remains local.',
+            ),
+          ),
+        );
+      }
+    } catch (_) {
+      widget.controller.refreshViews();
+      if (mounted) {
+        setState(
+          () => modelError =
+              'The selected models could not be verified as local. Check that they are installed and support the selected task. Cloud models are refused.',
+        );
+      }
+    } finally {
+      if (mounted) setState(() => checkingModels = false);
+    }
+  }
+
   @override
   void dispose() {
     keyInput.dispose();
@@ -1225,7 +1321,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
         final embed = c.embeddings is WebEmbeddings
             ? c.embeddings as WebEmbeddings
             : null;
-        if (endpointInput.text.isEmpty && intel != null) {
+        if (!modelFieldsInitialized && intel != null) {
+          modelFieldsInitialized = true;
           endpointInput.text = intel.endpoint;
           chatModelInput.text = intel.chatModel;
           visionModelInput.text = intel.visionModel;
@@ -1249,70 +1346,85 @@ class _SettingsScreenState extends State<SettingsScreen> {
               const Text(
                 'This client talks only to a model server on your own machine (Ollama-compatible, localhost only). '
                 'Your documents stay in this browser tab’s memory and are sent nowhere else. '
-                'If your browser blocks the connection, start Ollama with OLLAMA_ORIGINS set to this page’s origin.',
+                'Only installed models verified as local can receive report content. This browser client clears your documents when reloaded.',
                 style: TextStyle(fontSize: 13, height: 1.5),
               ),
               const SizedBox(height: 16),
               TextField(
+                enabled: !checkingModels && !c.busy,
                 controller: endpointInput,
                 keyboardType: TextInputType.url,
                 decoration: const InputDecoration(
                   labelText: 'Local server (localhost only)',
                 ),
               ),
+              const SizedBox(height: 8),
+              TextButton.icon(
+                onPressed: checkingModels || c.busy ? null : _findLocalModels,
+                icon: const Icon(Icons.search),
+                label: const Text('Find installed models'),
+              ),
               const SizedBox(height: 12),
               TextField(
+                enabled: !checkingModels && !c.busy,
                 controller: chatModelInput,
-                decoration: const InputDecoration(
-                  labelText: 'Chat model (e.g. gemma3:1b)',
+                decoration: InputDecoration(
+                  suffixIcon: _modelMenu(chatModelInput),
+                  labelText: 'Chat model',
                   helperText:
                       'Required for organizing, extracting, and answering.',
                 ),
               ),
               const SizedBox(height: 12),
               TextField(
+                enabled: !checkingModels && !c.busy,
                 controller: visionModelInput,
-                decoration: const InputDecoration(
+                decoration: InputDecoration(
+                  suffixIcon: _modelMenu(visionModelInput),
                   labelText: 'Vision model (optional)',
                   helperText: 'Needed to read scans and photos.',
                 ),
               ),
               const SizedBox(height: 12),
               TextField(
+                enabled: !checkingModels && !c.busy,
                 controller: embeddingModelInput,
-                decoration: const InputDecoration(
-                  labelText: 'Embedding model (optional)',
+                decoration: InputDecoration(
+                  suffixIcon: _modelMenu(embeddingModelInput),
+                  labelText: 'Search model (EmbeddingGemma 2)',
                   helperText:
-                      'Enables semantic search; keyword search works without it.',
+                      'Optional. Semantic search uses your installed model; keyword search works without it.',
                 ),
               ),
               const SizedBox(height: 16),
               FilledButton(
-                onPressed: (intel == null || embed == null)
+                onPressed:
+                    intel == null || embed == null || checkingModels || c.busy
                     ? null
-                    : () {
-                        intel.endpoint = endpointInput.text.trim();
-                        intel.chatModel = chatModelInput.text.trim();
-                        intel.visionModel = visionModelInput.text.trim();
-                        embed.endpoint = endpointInput.text.trim();
-                        embed.embeddingModel = embeddingModelInput.text.trim();
-                        embed.version = null;
-                        c.refreshViews();
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(
-                            content: Text('Local model settings saved.'),
-                          ),
-                        );
-                      },
-                child: const Text('Save local AI settings'),
+                    : () => _connectLocalModels(intel, embed),
+                child: Text(
+                  checkingModels
+                      ? 'Checking local models…'
+                      : 'Connect local models',
+                ),
               ),
               const SizedBox(height: 8),
               Text(
                 'Chat: ${intel != null && intel.available ? 'connected (${intel.chatModel})' : 'not connected'} · '
-                'Vision: ${intel != null && intel.visionAvailable ? 'set' : 'not set'} · '
-                'Embeddings: ${embed != null && embed.available ? 'set' : 'not set'}',
+                'Vision: ${intel != null && intel.visionAvailable ? 'verified' : 'not connected'} · '
+                'Search: ${embed != null && embed.available ? 'verified' : 'keyword only'}',
                 style: const TextStyle(fontSize: 12),
               ),
+              if (modelError != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 8),
+                  child: Text(
+                    modelError!,
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.error,
+                    ),
+                  ),
+                ),
               if (c.failure != null)
                 Padding(
                   padding: const EdgeInsets.only(top: 8),

@@ -138,6 +138,12 @@ void main() {
         containsAll(['user', 'assistant']),
       );
       expect(controller.data.memories, isNotEmpty);
+      final memory = controller.data.memories.singleWhere(
+        (memory) => memory.sessionId == controller.activeSessionId,
+      );
+      // Appending the answer must retain the embedding of unchanged user context.
+      expect(memory.vector, isNotNull);
+      expect(memory.embeddingVersion, 'fake:1');
     },
   );
 
