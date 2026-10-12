@@ -1,0 +1,10 @@
+Ayumitra
+Copyright 2026 Ayumitra contributors
+
+Ayumitra's original source code is licensed under the Apache License,
+Version 2.0. See LICENSE.
+
+Third-party code, native libraries, fonts, and model weights retain their
+own licenses and notices. The app license does not relicense these assets.
+See docs/dependencies.md for the current dependency review and remaining
+release checks. Preserve upstream notices when distributing builds.

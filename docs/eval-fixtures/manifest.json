@@ -1,0 +1,412 @@
+{
+  "note": "SYNTHETIC fixtures only. Ranges/dates are test data, not clinical guidance. Eval profile: age 2 recorded 2026-10-12; age labels are estimates per ageAtEvent (midpoint, never a DOB).",
+  "categories": [
+    "lab",
+    "prescription",
+    "radiology",
+    "discharge",
+    "vaccination",
+    "growth",
+    "note"
+  ],
+  "fixtures": {
+    "F01_cbc_digital.pdf": {
+      "sha256": "7b3a299acd6965ff2846aa9a786458c72c53b84479146dff16bd6675889af479",
+      "synthetic": true,
+      "lane": "A",
+      "category": "lab",
+      "event_date": "2026-03-14",
+      "date_confidence": "known",
+      "expected_facts": [
+        {
+          "kind": "lab",
+          "name_raw": "Hb",
+          "value": "11.2",
+          "unit": "g/dL",
+          "ref_low": "12.0",
+          "ref_high": "16.0",
+          "date": "2026-03-14",
+          "page": 1
+        },
+        {
+          "kind": "lab",
+          "name_raw": "WBC",
+          "value": "7.4",
+          "unit": "10^3/uL",
+          "ref_low": "4.0",
+          "ref_high": "11.0",
+          "date": "2026-03-14",
+          "page": 1
+        },
+        {
+          "kind": "lab",
+          "name_raw": "Platelets",
+          "value": "250",
+          "unit": "10^3/uL",
+          "ref_low": "150",
+          "ref_high": "400",
+          "date": "2026-03-14",
+          "page": 1
+        },
+        {
+          "kind": "lab",
+          "name_raw": "MCV",
+          "value": "82",
+          "unit": "fL",
+          "ref_low": "80",
+          "ref_high": "100",
+          "date": "2026-03-14",
+          "page": 1
+        }
+      ],
+      "expected_age_label": "About age 1",
+      "needs_review": false,
+      "adversarial": false
+    },
+    "F02_prescription_scan.png": {
+      "sha256": "92be5df2769bfcb21dcf553c15131451b1a2da2e9404f8647893373b9db61166",
+      "synthetic": true,
+      "lane": "B",
+      "category": "prescription",
+      "event_date": "2026-03-15",
+      "date_confidence": "known",
+      "expected_facts": [
+        {
+          "kind": "medicine",
+          "name_raw": "Amoxicillin",
+          "value": "250",
+          "unit": "mg",
+          "ref_low": null,
+          "ref_high": null,
+          "date": "2026-03-15",
+          "page": 1
+        },
+        {
+          "kind": "medicine",
+          "name_raw": "Paracetamol",
+          "value": "250",
+          "unit": "mg",
+          "ref_low": null,
+          "ref_high": null,
+          "date": "2026-03-15",
+          "page": 1
+        }
+      ],
+      "expected_age_label": "About age 1",
+      "needs_review": false,
+      "adversarial": false
+    },
+    "F03_prescription_camera.png": {
+      "sha256": "54825bc993a90d7a852d28614a48083d7070893c00506beaafbba8134e2697cf",
+      "synthetic": true,
+      "lane": "C",
+      "category": "prescription",
+      "event_date": "2026-03-15",
+      "date_confidence": "known",
+      "expected_facts": [
+        {
+          "kind": "medicine",
+          "name_raw": "Amoxicillin",
+          "value": "250",
+          "unit": "mg",
+          "ref_low": null,
+          "ref_high": null,
+          "date": "2026-03-15",
+          "page": 1
+        }
+      ],
+      "expected_age_label": "About age 1",
+      "needs_review": true,
+      "adversarial": false
+    },
+    "F04_xray_report_digital.pdf": {
+      "sha256": "71bf773dd52176c9530716b9b3a60ece83e089ffb2dd76d93e797188649ddf5a",
+      "synthetic": true,
+      "lane": "A",
+      "category": "radiology",
+      "event_date": "2026-02-02",
+      "date_confidence": "known",
+      "expected_facts": [
+        {
+          "kind": "diagnosis",
+          "name_raw": "Chest X-ray impression",
+          "value": "Normal chest radiograph (synthetic)",
+          "unit": null,
+          "ref_low": null,
+          "ref_high": null,
+          "date": "2026-02-02",
+          "page": 1
+        }
+      ],
+      "expected_age_label": "About age 1",
+      "needs_review": false,
+      "adversarial": false
+    },
+    "F05_discharge_digital.pdf": {
+      "sha256": "ce3238b238cedc15d4831051ff7fd827b5a0905a6b1d2370645bc6aed14fe53f",
+      "synthetic": true,
+      "lane": "A",
+      "category": "discharge",
+      "event_date": "2026-01-20",
+      "date_confidence": "known",
+      "expected_facts": [
+        {
+          "kind": "diagnosis",
+          "name_raw": "Diagnosis",
+          "value": "Acute viral fever (synthetic)",
+          "unit": null,
+          "ref_low": null,
+          "ref_high": null,
+          "date": "2026-01-20",
+          "page": 1
+        },
+        {
+          "kind": "vital",
+          "name_raw": "Temp",
+          "value": "100.4",
+          "unit": "F",
+          "ref_low": null,
+          "ref_high": null,
+          "date": "2026-01-20",
+          "page": 1
+        },
+        {
+          "kind": "vital",
+          "name_raw": "SpO2",
+          "value": "98",
+          "unit": "%",
+          "ref_low": null,
+          "ref_high": null,
+          "date": "2026-01-20",
+          "page": 1
+        }
+      ],
+      "expected_age_label": "About age 1",
+      "needs_review": false,
+      "adversarial": false
+    },
+    "F06_vaccine_card.png": {
+      "sha256": "c3fc3ee173c8a4c8dc300fd2354b81c303823874c9e268bf681b2735b2bd6d74",
+      "synthetic": true,
+      "lane": "B",
+      "category": "vaccination",
+      "event_date": "2024-07-15",
+      "date_confidence": "known",
+      "date_note": "card spans 2024-06-01..2024-07-15; latest used for ordering; age label About age 0 per midpoint formula (not unknown: estimate >= 0)",
+      "expected_facts": [
+        {
+          "kind": "vaccine",
+          "name_raw": "BCG",
+          "value": "2024-06-01",
+          "unit": null,
+          "ref_low": null,
+          "ref_high": null,
+          "date": "2024-06-01",
+          "page": 1
+        },
+        {
+          "kind": "vaccine",
+          "name_raw": "OPV-1",
+          "value": "2024-07-15",
+          "unit": null,
+          "ref_low": null,
+          "ref_high": null,
+          "date": "2024-07-15",
+          "page": 1
+        }
+      ],
+      "expected_age_label": "About age 0",
+      "needs_review": false,
+      "adversarial": false
+    },
+    "F07_growth_note_digital.pdf": {
+      "sha256": "6e16a149193547979b664901feddc2171cce9c2e2ea8fb759a99c8e822bbe80d",
+      "synthetic": true,
+      "lane": "A",
+      "category": "growth",
+      "event_date": "2026-03-01",
+      "date_confidence": "known",
+      "expected_facts": [
+        {
+          "kind": "growth",
+          "name_raw": "Weight",
+          "value": "14.2",
+          "unit": "kg",
+          "ref_low": null,
+          "ref_high": null,
+          "date": "2026-03-01",
+          "page": 1
+        },
+        {
+          "kind": "growth",
+          "name_raw": "Height",
+          "value": "92",
+          "unit": "cm",
+          "ref_low": null,
+          "ref_high": null,
+          "date": "2026-03-01",
+          "page": 1
+        },
+        {
+          "kind": "growth",
+          "name_raw": "Head circ",
+          "value": "48.5",
+          "unit": "cm",
+          "ref_low": null,
+          "ref_high": null,
+          "date": "2026-03-01",
+          "page": 1
+        }
+      ],
+      "expected_age_label": "About age 1",
+      "needs_review": false,
+      "adversarial": false
+    },
+    "F08_cbc_followup_digital.pdf": {
+      "sha256": "d7e612ec02b9c398c0b3681501153411d492e2361d887eab1a78e0a370e38ffe",
+      "synthetic": true,
+      "lane": "A",
+      "category": "lab",
+      "event_date": "2026-04-20",
+      "date_confidence": "known",
+      "expected_facts": [
+        {
+          "kind": "lab",
+          "name_raw": "Hb",
+          "value": "12.4",
+          "unit": "g/dL",
+          "ref_low": "12.0",
+          "ref_high": "16.0",
+          "date": "2026-04-20",
+          "page": 1
+        },
+        {
+          "kind": "lab",
+          "name_raw": "WBC",
+          "value": "6.8",
+          "unit": "10^3/uL",
+          "ref_low": "4.0",
+          "ref_high": "11.0",
+          "date": "2026-04-20",
+          "page": 1
+        }
+      ],
+      "expected_age_label": "About age 2",
+      "needs_review": false,
+      "adversarial": false
+    },
+    "F09_lab_adversarial_digital.pdf": {
+      "sha256": "b7c3b274c2d937e2ca0ea6dd1b097988bc2f57a0a18c405dd956ade398f50ad4",
+      "synthetic": true,
+      "lane": "A",
+      "category": "lab",
+      "event_date": "2026-05-01",
+      "date_confidence": "known",
+      "expected_facts": [
+        {
+          "kind": "lab",
+          "name_raw": "Hb",
+          "value": "12.0",
+          "unit": "g/dL",
+          "ref_low": "12.0",
+          "ref_high": "16.0",
+          "date": "2026-05-01",
+          "page": 1
+        }
+      ],
+      "expected_age_label": "About age 2",
+      "needs_review": false,
+      "adversarial": true
+    },
+    "F10_partial_scan.png": {
+      "sha256": "8348ada68783b42217f1e1f250fa6e65024e9cb9bbbac85ad1e20350628a5b77",
+      "synthetic": true,
+      "lane": "B/C-degraded",
+      "category": "prescription",
+      "event_date": "2026-03-15",
+      "date_confidence": "known",
+      "expected_facts": [],
+      "expected_age_label": "About age 1",
+      "needs_review": true,
+      "adversarial": false
+    },
+    "F11_note_unknown_date.png": {
+      "sha256": "7f74e5f3e4852bcdc3c48a395f5687eccb3a54e1ce3e137577cc75dc244b1a28",
+      "synthetic": true,
+      "lane": "B",
+      "category": "note",
+      "event_date": null,
+      "date_confidence": "unknown",
+      "expected_facts": [
+        {
+          "kind": "diagnosis",
+          "name_raw": "Symptom note",
+          "value": "Fever for 2 days (synthetic, undated)",
+          "unit": null,
+          "ref_low": null,
+          "ref_high": null,
+          "date": null,
+          "page": 1
+        }
+      ],
+      "expected_age_label": "Age at event unknown",
+      "needs_review": false,
+      "adversarial": false
+    },
+    "F12_old_record_conflict.pdf": {
+      "sha256": "195096fb52f897eb634e5c08b77af1f601706a937240bd46119257bd6b42f819",
+      "synthetic": true,
+      "lane": "A",
+      "category": "lab",
+      "event_date": "2020-05-01",
+      "date_confidence": "conflicting",
+      "date_note": "predates plausible birth for eval profile (age 2 recorded 2026-10-12); keep source date, flag conflict, never infer DOB",
+      "expected_facts": [
+        {
+          "kind": "lab",
+          "name_raw": "Hb",
+          "value": "12.1",
+          "unit": "g/dL",
+          "ref_low": "12.0",
+          "ref_high": "16.0",
+          "date": "2020-05-01",
+          "page": 1
+        }
+      ],
+      "expected_age_label": "Age at event unknown",
+      "needs_review": false,
+      "adversarial": false
+    }
+  },
+  "ordering_cases": {
+    "rule": "timelineFor: profile scope, optional category filter, event-date descending, unknown dates last (importedAt tiebreak among unknowns)",
+    "expected_timeline_order": [
+      "F09_lab_adversarial_digital.pdf",
+      "F08_cbc_followup_digital.pdf",
+      "F02_prescription_scan.png",
+      "F03_prescription_camera.png",
+      "F10_partial_scan.png",
+      "F01_cbc_digital.pdf",
+      "F07_growth_note_digital.pdf",
+      "F04_xray_report_digital.pdf",
+      "F05_discharge_digital.pdf",
+      "F06_vaccine_card.png",
+      "F12_old_record_conflict.pdf",
+      "F11_note_unknown_date.png"
+    ],
+    "cases": [
+      "O1 chronological newest-first incl. same-date group",
+      "O2 unknown-date note sorts last and stays unknown",
+      "O3 conflicting pre-birth date kept + flagged, never dropped or used for age math"
+    ]
+  },
+  "markdown_summary_acceptance": [
+    "headings present: summary, findings, medicines, open questions, sources (or equivalent)",
+    "findings table carries value, unit, source range, event date, source link per row",
+    "medicines section lists active meds with source report links",
+    "unknown fields shown as unknown; conflicting values shown side-by-side with dates, never silently resolved",
+    "every factual claim carries a [report/line] citation passing validCitations",
+    "after a fact correction the stored summary is invalidated until regenerated",
+    "zero invented values; zero unsupported claims"
+  ]
+}

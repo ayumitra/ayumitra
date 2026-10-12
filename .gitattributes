@@ -1,0 +1,5 @@
+# Preserve document bytes and upstream license texts exactly.
+*.pdf binary
+LICENSE whitespace=-trailing-space,-space-before-tab,-blank-at-eof
+assets/notices/*.txt whitespace=-trailing-space,-space-before-tab,-blank-at-eof
+web/assets/fonts/ROBOTO-LICENSE.txt whitespace=-trailing-space,-space-before-tab,-blank-at-eof

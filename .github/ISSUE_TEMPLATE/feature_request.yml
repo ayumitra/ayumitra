@@ -1,0 +1,25 @@
+name: Feature or improvement
+description: Suggest an improvement to the companion, documentation, or accessibility.
+title: "[Idea] "
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        Describe the need with invented examples. Keep personal medical records
+        and identifiers out of this public discussion.
+  - type: textarea
+    id: need
+    attributes:
+      label: What would this help someone do?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed experience
+      description: Explain how this should work through conversation or evidence cards.
+  - type: textarea
+    id: constraints
+    attributes:
+      label: Local processing and accessibility
+      description: Mention offline requirements, device constraints, or accessibility needs.

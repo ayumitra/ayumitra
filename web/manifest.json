@@ -1,0 +1,10 @@
+{
+  "name": "Ayumitra UX preview",
+  "short_name": "Ayumitra preview",
+  "start_url": ".",
+  "display": "browser",
+  "background_color": "#f7f8f2",
+  "theme_color": "#477c68",
+  "description": "Synthetic in-memory UX preview. No report uploads or cloud AI.",
+  "lang": "en"
+}
