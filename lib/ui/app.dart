@@ -623,9 +623,15 @@ class _CompanionScreenState extends State<CompanionScreen> {
           ListTile(
             leading: const Icon(Icons.history),
             title: const Text('Report history'),
+            trailing: section == 1
+                ? const Icon(Icons.arrow_back, size: 18)
+                : null,
             selected: section == 1,
+            // Toggles: tapping again returns to the companion conversation.
+            // This is the only way home on wide screens, where the bottom
+            // navigation bar is hidden.
             onTap: () {
-              setState(() => section = 1);
+              setState(() => section = section == 1 ? 0 : 1);
               _closeDrawer();
             },
           ),
@@ -684,6 +690,15 @@ class _CompanionScreenState extends State<CompanionScreen> {
         : Drawer(backgroundColor: const Color(0xffeff2eb), child: _sidebar()),
     appBar: AppBar(
       automaticallyImplyLeading: !desktop,
+      // Wide screens hide the bottom navigation bar, so Report history
+      // needs an explicit way back to the companion conversation.
+      leading: section == 1 && desktop
+          ? IconButton(
+              tooltip: 'Back to companion',
+              onPressed: () => setState(() => section = 0),
+              icon: const Icon(Icons.arrow_back),
+            )
+          : null,
       title: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
