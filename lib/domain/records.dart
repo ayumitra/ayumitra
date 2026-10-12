@@ -308,12 +308,49 @@ List<Report> timelineFor(
   return result;
 }
 
+/// Metadata for one explicit-tap second-opinion export. The pack content is
+/// never logged — only the target, date, session, and report ids.
+class SecondOpinionAudit {
+  const SecondOpinionAudit({
+    required this.id,
+    required this.profileId,
+    required this.sessionId,
+    required this.target,
+    required this.reportIds,
+    required this.reviewed,
+    required this.createdAt,
+  });
+  final String id, profileId, sessionId, target;
+  final List<String> reportIds;
+  final bool reviewed;
+  final DateTime createdAt;
+  Json toJson() => {
+    'id': id,
+    'profileId': profileId,
+    'sessionId': sessionId,
+    'target': target,
+    'reportIds': reportIds,
+    'reviewed': reviewed,
+    'createdAt': createdAt.toIso8601String(),
+  };
+  factory SecondOpinionAudit.fromJson(Json j) => SecondOpinionAudit(
+    id: j['id'] as String,
+    profileId: j['profileId'] as String,
+    sessionId: j['sessionId'] as String,
+    target: j['target'] as String,
+    reportIds: (j['reportIds'] as List? ?? []).cast<String>(),
+    reviewed: j['reviewed'] as bool? ?? false,
+    createdAt: DateTime.parse(j['createdAt'] as String),
+  );
+}
+
 class VaultData {
   const VaultData({
     this.profiles = const [],
     this.reports = const [],
     this.sessions = const [],
     this.memories = const [],
+    this.exports = const [],
     this.modelPath,
     this.modelType = 'gemma4',
     this.embeddingPath,
@@ -326,6 +363,8 @@ class VaultData {
   final List<Report> reports;
   final List<ConversationSession> sessions;
   final List<ConversationMemory> memories;
+  // Explicit-tap second-opinion audit log (metadata only, never pack content).
+  final List<SecondOpinionAudit> exports;
   final String? modelPath, embeddingPath, embeddingVersion;
   final String modelType;
   final String? activeProfileId, activeSessionId;
@@ -337,6 +376,7 @@ class VaultData {
     List<Report>? reports,
     List<ConversationSession>? sessions,
     List<ConversationMemory>? memories,
+    List<SecondOpinionAudit>? exports,
     String? modelPath,
     String? modelType,
     String? embeddingPath,
@@ -351,6 +391,7 @@ class VaultData {
     reports: reports ?? this.reports,
     sessions: sessions ?? this.sessions,
     memories: memories ?? this.memories,
+    exports: exports ?? this.exports,
     modelPath: modelPath ?? this.modelPath,
     modelType: modelType ?? this.modelType,
     embeddingPath: embeddingPath ?? this.embeddingPath,
@@ -370,6 +411,7 @@ class VaultData {
     'reports': reports.map((x) => x.toJson()).toList(),
     'sessions': sessions.map((x) => x.toJson()).toList(),
     'memories': memories.map((x) => x.toJson()).toList(),
+    'exports': exports.map((x) => x.toJson()).toList(),
     'modelPath': modelPath,
     'modelType': modelType,
     'embeddingPath': embeddingPath,
@@ -396,6 +438,9 @@ class VaultData {
           .toList(),
       memories: (j['memories'] as List? ?? [])
           .map((x) => ConversationMemory.fromJson(Json.from(x)))
+          .toList(),
+      exports: (j['exports'] as List? ?? [])
+          .map((x) => SecondOpinionAudit.fromJson(Json.from(x)))
           .toList(),
       modelPath: j['modelPath'],
       modelType: j['modelType'] ?? 'gemma4',

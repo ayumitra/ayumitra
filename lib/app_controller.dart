@@ -18,6 +18,7 @@ import 'domain/conversations.dart';
 import 'domain/extraction.dart';
 import 'domain/records.dart';
 import 'domain/retrieval.dart';
+import 'domain/second_opinion.dart';
 import 'services/local_embeddings.dart';
 import 'services/camera_cache.dart';
 import 'services/local_intelligence.dart';
@@ -882,6 +883,50 @@ class AppController extends ChangeNotifier {
 
   Future<Uint8List> original(Report report) =>
       vault.readOriginal(report, profile!.id);
+
+  /// Builds the explicit-tap second-opinion pack for the active session.
+  /// Local only: no network call, no vault upload. Throws when there is no
+  /// active profile/session to export.
+  SecondOpinionPack secondOpinionPack({int maxChars = 4000}) {
+    final owner = profile;
+    final session = activeSession;
+    if (owner == null || session == null) {
+      throw StateError('Nothing to export yet.');
+    }
+    return buildSecondOpinionPack(
+      profile: owner,
+      session: session,
+      reports: data.reports,
+      maxChars: maxChars,
+    );
+  }
+
+  /// Records an explicit-tap export in the encrypted vault audit log.
+  /// Only metadata is stored — never the pack content.
+  Future<SecondOpinionAudit> recordSecondOpinionExport({
+    required String target,
+    required List<String> reportIds,
+  }) async {
+    final owner = profile;
+    final session = activeSession;
+    if (owner == null || session == null) {
+      throw StateError('Nothing to export yet.');
+    }
+    if (target != 'chatgpt' && target != 'claude' && target != 'file') {
+      throw const FormatException('Unknown export target.');
+    }
+    final entry = SecondOpinionAudit(
+      id: _uuid.v4(),
+      profileId: owner.id,
+      sessionId: session.id,
+      target: target,
+      reportIds: List.unmodifiable(reportIds),
+      reviewed: true,
+      createdAt: DateTime.now(),
+    );
+    await _commit(data.copy(exports: [...data.exports, entry]));
+    return entry;
+  }
 
   Future<void> installModel(
     PlatformFile file, {

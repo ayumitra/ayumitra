@@ -13,6 +13,7 @@ import '../domain/records.dart';
 import '../domain/retrieval.dart';
 import 'source_screen.dart';
 import 'profiles_screen.dart';
+import 'second_opinion_screen.dart';
 
 const ink = Color(0xff203f38);
 const canvas = Color(0xfff7f8f2);
@@ -706,6 +707,18 @@ class _CompanionScreenState extends State<CompanionScreen> {
             tooltip: 'New conversation',
             onPressed: c.busy ? null : _newConversation,
             icon: const Icon(Icons.edit_square),
+          ),
+        if (section == 0 && (c.activeSession?.turns.isNotEmpty ?? false))
+          IconButton(
+            tooltip: 'Ask ChatGPT or Claude',
+            onPressed: c.busy
+                ? null
+                : () => Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => SecondOpinionScreen(controller: c),
+                    ),
+                  ),
+            icon: const Icon(Icons.output_outlined),
           ),
         IconButton(
           tooltip: c.isPreview ? 'About this preview' : 'Companion settings',

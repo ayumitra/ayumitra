@@ -88,6 +88,7 @@ Warn in UI: “De-identified draft — review before sharing. Dates + rare histo
 3. Preview screen, editable, with identifier checklist.
 4. User taps `Open in ChatGPT / Open in Claude` → app fires explicit share intent / universal link / copies markdown to clipboard and opens target app. **AyuMitra never calls OpenAI/Anthropic APIs itself; the user sends it themselves from the other app.**
 5. Local audit: `export id, date, target (chatgpt/claude/file), report_ids, reviewed` — no content in logs.
+6. **Status (v1 shipped):** session-level export is implemented (`SecondOpinionScreen` + `buildSecondOpinionPack` + vault audit log). Explicit tap only; pack is user-reviewed and editable; copy-to-clipboard + open `https://chatgpt.com` / `https://claude.ai` in an external browser — the app never calls their APIs. Unverified `chatgpt://` / `claude://` deep-link schemes remain out.
 
 This satisfies “always local, share only when tapped” while still letting users get a powerful cloud second opinion when they choose it.
 
