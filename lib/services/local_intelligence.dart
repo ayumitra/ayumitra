@@ -21,6 +21,9 @@ class LocalIntelligence implements Intelligence {
   @override
   bool get available => path != null;
 
+  /// Backend actually selected by the local runtime, including fallback.
+  String? get activeBackend => _model?.activeBackend?.name;
+
   Future<void> configure(String localPath, String family) async {
     final file = File(localPath);
     if (!localPath.endsWith('.litertlm') || !await file.exists()) {
@@ -61,6 +64,9 @@ class LocalIntelligence implements Intelligence {
       _model ??= await FlutterEdgeAi.getActiveModel(
         maxTokens: 8192,
         preferredBackend: PreferredBackend.gpu,
+        // Preserve medical digits on Adreno/Metal long prompts. The runtime
+        // can use local CPU if the float32 GPU engine cannot initialize.
+        activationDataType: ActivationDataType.float32,
         supportImage: true,
         maxNumImages: 1,
       );
@@ -115,6 +121,9 @@ class LocalIntelligence implements Intelligence {
     _model ??= await FlutterEdgeAi.getActiveModel(
       maxTokens: 8192,
       preferredBackend: PreferredBackend.gpu,
+      // Preserve medical digits on Adreno/Metal long prompts. The runtime
+      // can use local CPU if the float32 GPU engine cannot initialize.
+      activationDataType: ActivationDataType.float32,
     );
     final session = await _model!.createSession(
       systemInstruction: instruction,
@@ -201,7 +210,7 @@ For a health update, respond briefly: explicitly acknowledge the saved value and
 Check supplied report evidence for corroboration of the same finding, value, and compatible event date.
 If corroboration exists, cite that exact report source as well as the user statement. Never claim a different value or an older event corroborates the update.
 If no supporting report exists, retain the update as user-reported without a report reference and ask briefly whether the user has a report to add. Cite only conversation provenance for the unsupported update.
-Preserve earlier report values as history. A user correction takes priority in the current explanation but does not rewrite the original file; make any conflict explicit.
+Preserve earlier report values as history. For a question about a specific report or event date, answer from that dated report; never substitute a newer user-reported value from a different date. User-reported information is paramount for current-state questions, not a reason to rewrite earlier dated findings. A user correction takes priority in the current explanation but does not rewrite the original file; make any conflict explicit.
 Explain missing/conflicting information. Do not diagnose
 from an image, invent results, or recommend changing a prescribed dose.
 Every factual statement must cite an exact supplied source ID in square brackets.

@@ -673,28 +673,30 @@ class DemoController extends AppController {
     final aliases = CitationAliases.fromCanonical(
       sources.map((x) => x['sourceId'] as String).toList(),
     );
-    final output = await intelligence.generate(
-      summaryPrompt,
-      jsonEncode({
-        'task': 'Summarize this report',
-        'category': report.type,
-        'eventDate': report.eventDate?.toIso8601String(),
-        'ageAtEvent': ageAtEvent(owner, report.eventDate),
-        'citationGuide': aliases.instruction(),
-        'facts': sources
-            .map((x) => {...x, 'sourceId': aliases.aliasFor(x['sourceId'])})
-            .toList(),
-      }),
+    final canonical = sources.map((x) => x['sourceId'] as String).toSet();
+    final payload = {
+      'task': 'Summarize this report',
+      'category': report.type,
+      'eventDate': report.eventDate?.toIso8601String(),
+      'ageAtEvent': ageAtEvent(owner, report.eventDate),
+      'citationGuide': aliases.instruction(),
+      'facts': sources
+          .map((x) => {...x, 'sourceId': aliases.aliasFor(x['sourceId'])})
+          .toList(),
+    };
+    // Same repair contract as the native controller: at most two controlled
+    // citation/format repairs on the same payload and aliases, never echoing
+    // a rejected draft; null on cap keeps the no-summary notice path below.
+    final output = await generateValidatedAnswer(
+      generate: intelligence.generate,
+      instruction: summaryPrompt,
+      payload: payload,
+      status: announceStep,
+      validate: (text) =>
+          aliases.validate(text, canonical) &&
+          validCitations(aliases.resolveText(text), canonical),
     );
-    final resolved = aliases.resolveText(output);
-    if (!aliases.validate(
-          output,
-          sources.map((x) => x['sourceId'] as String).toSet(),
-        ) ||
-        !validCitations(
-          resolved,
-          sources.map((x) => x['sourceId'] as String).toSet(),
-        )) {
+    if (output == null) {
       _save(
         data.copy(
           reports: data.reports
@@ -716,7 +718,7 @@ class DemoController extends AppController {
         reports: data.reports
             .map(
               (r) => r.id == report.id && r.profileId == report.profileId
-                  ? report.copy(summaryMarkdown: resolved)
+                  ? report.copy(summaryMarkdown: aliases.resolveText(output))
                   : r,
             )
             .toList(),

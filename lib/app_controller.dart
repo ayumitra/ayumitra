@@ -151,7 +151,7 @@ class AppController extends ChangeNotifier {
   }
 
   bool _isQuestionShaped(String clause) => RegExp(
-    r'^(what|when|where|who|whose|which|how|why|is|are|am|was|were|do|does|did|can|could|would|should|will|research|search|explain|summari[sz]e|recall|compare|find|show|tell|please|help|check|look up)\b',
+    r'^(what|when|where|who|whose|which|how|why|is|are|am|was|were|do|does|did|can|could|would|should|will|research|search|explain|summari[sz]e|recall|compare|find|show|tell|answer|respond|reply|format|return|please|help|check|look up)\b',
     caseSensitive: false,
   ).hasMatch(clause);
 
@@ -987,28 +987,31 @@ class AppController extends ChangeNotifier {
     final aliases = CitationAliases.fromCanonical(
       sources.map((x) => x['sourceId'] as String).toList(),
     );
-    final output = await intelligence.generate(
-      summaryPrompt,
-      jsonEncode({
-        'task': 'Summarize this report',
-        'category': report.type,
-        'eventDate': report.eventDate?.toIso8601String(),
-        'ageAtEvent': ageAtEvent(owner, report.eventDate),
-        'citationGuide': aliases.instruction(),
-        'facts': sources
-            .map((x) => {...x, 'sourceId': aliases.aliasFor(x['sourceId'])})
-            .toList(),
-      }),
+    final canonical = sources.map((x) => x['sourceId'] as String).toSet();
+    final payload = {
+      'task': 'Summarize this report',
+      'category': report.type,
+      'eventDate': report.eventDate?.toIso8601String(),
+      'ageAtEvent': ageAtEvent(owner, report.eventDate),
+      'citationGuide': aliases.instruction(),
+      'facts': sources
+          .map((x) => {...x, 'sourceId': aliases.aliasFor(x['sourceId'])})
+          .toList(),
+    };
+    // Malformed summaries are repaired like chat answers: the same payload
+    // and aliases drive at most two controlled citation/format repairs, and
+    // a rejected draft is never echoed back. Null on cap keeps the existing
+    // no-summary notice path below.
+    final output = await generateValidatedAnswer(
+      generate: intelligence.generate,
+      instruction: summaryPrompt,
+      payload: payload,
+      status: announceStep,
+      validate: (text) =>
+          aliases.validate(text, canonical) &&
+          validCitations(aliases.resolveText(text), canonical),
     );
-    final resolved = aliases.resolveText(output);
-    if (!aliases.validate(
-          output,
-          sources.map((x) => x['sourceId'] as String).toSet(),
-        ) ||
-        !validCitations(
-          resolved,
-          sources.map((x) => x['sourceId'] as String).toSet(),
-        )) {
+    if (output == null) {
       await _replace(
         report.copy(
           notice:
@@ -1017,7 +1020,7 @@ class AppController extends ChangeNotifier {
       );
       return;
     }
-    await _replace(report.copy(summaryMarkdown: resolved));
+    await _replace(report.copy(summaryMarkdown: aliases.resolveText(output)));
   }
 
   Future<void> correctFact(

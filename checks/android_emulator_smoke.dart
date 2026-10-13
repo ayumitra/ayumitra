@@ -143,6 +143,20 @@ Future<void> _exercise(EmulatorAppController c) async {
       ),
       'user observation is saved in profile memory',
     );
+    await c.ask(_question);
+    final dated = c.messages.last;
+    _require(
+      !dated.isUser &&
+          dated.text.contains('11.2') &&
+          dated.text.contains('g/dL') &&
+          dated.hits.isNotEmpty &&
+          dated.hits.every(
+            (h) =>
+                h.report.profileId == owner.id &&
+                dated.text.contains('[${h.citation}]'),
+          ),
+      'real Gemma preserves dated report value after current user update',
+    );
     final voice = await const MethodChannel(
       'app.ayumitra/voice',
     ).invokeMapMethod<String, dynamic>('capabilities');

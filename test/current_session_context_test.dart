@@ -11,6 +11,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 class _ContextModel extends LocalIntelligence {
   final inputs = <Map>[];
+  final answerInstructions = <String>[];
   final plannerInputs = <Map>[];
   bool conversationPlan = false;
   bool omitUserReferenceOnce = false;
@@ -25,6 +26,7 @@ class _ContextModel extends LocalIntelligence {
       }
       return '{"actions":[{"action":"search_records","query":"hemoglobin"}]}';
     }
+    answerInstructions.add(instruction);
     final payload = jsonDecode(input) as Map;
     inputs.add(payload);
     final context = payload['currentSessionUserContext'] as Map?;
@@ -326,6 +328,34 @@ void main() {
           DateTime.utc(2026, 3, 14).toIso8601String(),
         );
         expect(controller.failure, isNull);
+      },
+    );
+    test(
+      '${browser ? 'browser' : 'native'} answer-format instructions cannot become a current observation',
+      () async {
+        final model = _ContextModel();
+        final controller = await _ready(browser, model);
+        await controller.ask('My hemoglobin was 13');
+        const request =
+            'What did the March 14 hemoglobin report say? '
+            'Answer in one sentence with its unit and a source reference.';
+        expect(controller.isUserStatement(request), isFalse);
+        await controller.ask(request);
+        final payload = model.inputs.last;
+        final context = payload['currentSessionUserContext'] as Map;
+        expect((context['currentTurn'] as Map)['kind'], 'request');
+        expect(context['text'], isNot(contains('Answer in one sentence')));
+        expect(model.answerInstructions.last, startsWith(summaryPrompt));
+        expect(
+          (payload['answerRequirements']
+              as Map?)?['requiredUserObservationSourceId'],
+          isNull,
+        );
+        expect(
+          controller.messages.last.text,
+          contains('11.2 g/dL [report-a/p1-l1]'),
+        );
+        expect(controller.reports.single.facts.single.value, '11.2');
       },
     );
     test(

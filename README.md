@@ -8,7 +8,7 @@ An English-speaking medical companion for Android and iOS, built for a child and
 - Encrypted original reports and an authenticated encrypted record/search index. A profile file library lists every stored original, including files that could not be parsed.
 - Saved conversations and user-stated memory scoped to each profile. Chat updates are available immediately and across sessions, with each message’s provided date; explicit user event dates take precedence. Deleting a conversation removes its memory without deleting reports.
 - File or rear-camera report import, with scoped temporary-copy cleanup.
-- English microphone input and opt-in “Ayu” (aa-yuh) wake listening while the companion screen is open, using strictly on-device speech recognition. Voice stops offscreen or during processing; unavailable local speech never falls back to cloud recognition.
+- English microphone input through strictly on-device speech recognition. Experimental foreground wake listening is deferred after the S24 recognizer confused “Ayu” with “are you”; tap-to-talk remains available. Voice stops offscreen or during processing, with no cloud fallback.
 - Local PDF text extraction and an imported local Gemma 4 vision model for scan/photo transcription; transcripts require review.
 - Local organizer/extractor/summarizer/planner prompts using one assistant model.
 - Clinical-date/category organization, DOB-based age-at-event labels, and Markdown summaries.

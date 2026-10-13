@@ -108,11 +108,10 @@ its system-model download request did not finish during verification. This
 blocks actual speech recognition there. The app fails closed with the missing
 English-model message and never uses a cloud recognizer. A device with an
 installed offline English model is needed for the remaining spoken check.
-On the connected Samsung S24, a temporary developer
-instrumentation package (outside the repo, no microphone/audio/health
-access) downloaded the OS English asset to 100% and was then removed — the
-app production code contains no model downloader. Actual microphone READY
-was confirmed on the S24 before shortening the wake name to Ayu. The Ayu
-Android build and matcher tests pass; installation and a real spoken-command
-check on the phone remain pending its USB reconnection. No spoken command
-pass is claimed on any device yet. The emulator missing-asset case above is still not a spoken pass.
+On 13 October 2026, a temporary developer instrumentation package downloaded
+the S24's offline English asset and was removed. The phone reached actual
+microphone READY. In the spoken test, the recognizer repeatedly transcribed
+“Ayu” as “are you”; successful wake activation was not verified. Wake-word
+development is now parked at the user's request while core report, memory,
+and on-device model work continues. No alternative wake name has been chosen.
+Tap-to-talk remains available through the same strictly local recognizer.
