@@ -8,7 +8,7 @@ An English-speaking medical companion for Android and iOS, built for a child and
 - Encrypted original reports and an authenticated encrypted record/search index. A profile file library lists every stored original, including files that could not be parsed.
 - Saved conversations and user-stated memory scoped to each profile. Chat updates are available immediately and across sessions, with each message’s provided date; explicit user event dates take precedence. Deleting a conversation removes its memory without deleting reports.
 - File or rear-camera report import, with scoped temporary-copy cleanup.
-- English microphone input and opt-in “Hey Ayumitra” listening while the companion screen is open, using strictly on-device speech recognition. Voice stops offscreen or during processing; unavailable local speech never falls back to cloud recognition.
+- English microphone input and opt-in “Ayu” (aa-yuh) wake listening while the companion screen is open, using strictly on-device speech recognition. Voice stops offscreen or during processing; unavailable local speech never falls back to cloud recognition.
 - Local PDF text extraction and an imported local Gemma 4 vision model for scan/photo transcription; transcripts require review.
 - Local organizer/extractor/summarizer/planner prompts using one assistant model.
 - Clinical-date/category organization, DOB-based age-at-event labels, and Markdown summaries.

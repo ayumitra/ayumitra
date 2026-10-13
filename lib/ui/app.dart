@@ -1309,11 +1309,11 @@ class _CompanionScreenState extends State<CompanionScreen> with RouteAware {
                   if (!c.isPreview)
                     Tooltip(
                       message:
-                          'On-device listening while this screen is open. Stops in the background; no cloud speech.',
+                          'Say “Ayu” (aa-yuh) while this screen is open. On-device listening. Stops in the background; no cloud speech.',
                       child: FilterChip(
                         avatar: const Icon(Icons.hearing, size: 17),
                         label: const Text(
-                          'Hey Ayumitra',
+                          'Ayu',
                           style: TextStyle(fontSize: 12),
                         ),
                         selected: voice.wakeEnabled,

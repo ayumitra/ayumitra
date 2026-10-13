@@ -44,13 +44,22 @@ public class VoiceProbe extends Instrumentation {
         require(select.invoke(instance,Arrays.asList("english","enochian","fr-FR","en-")) == null, "non-English accepted");
         require(select.invoke(instance,Collections.emptyList()) == null, "empty installed list accepted");
         result.putString("installed_english", "PASS");
+        Method selectRecognition = bridge.getDeclaredMethod("selectRecognitionEnglish", List.class, List.class);
+        selectRecognition.setAccessible(true);
+        Locale.setDefault(new Locale("en","DE"));
+        require("en-US".equals(selectRecognition.invoke(instance,Collections.emptyList(),Collections.emptyList())), "empty metadata missed US default");
+        require("en-US".equals(selectRecognition.invoke(instance,null,null)), "null metadata missed US default");
+        require("en-GB".equals(selectRecognition.invoke(instance,Collections.emptyList(),Arrays.asList("en-GB"))), "supported-only English ignored");
+        require("en-IN".equals(selectRecognition.invoke(instance,Arrays.asList("en-IN"),Arrays.asList("en-GB"))), "installed English priority lost");
+        require(selectRecognition.invoke(instance,Collections.emptyList(),Arrays.asList("de-DE","fr-FR")) == null, "explicit non-English support accepted");
+        result.putString("recognition_english", "PASS");
         Method listen = bridge.getDeclaredMethod("listenIntent",String.class);
         listen.setAccessible(true);
         Intent intent = (Intent)listen.invoke(instance,"en-IN");
         require("en-IN".equals(intent.getStringExtra(RecognizerIntent.EXTRA_LANGUAGE)), "uninstalled US locale substituted");
         require(intent.getBooleanExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE,false), "offline preference lost");
         List<String> hints = intent.getStringArrayListExtra(RecognizerIntent.EXTRA_BIASING_STRINGS);
-        require(hints != null && hints.contains("Hey Ayumitra") && hints.contains("Hey Aayu Mitra"), "wake bias hints lost");
+        require(hints != null && hints.contains("Ayu") && hints.contains("Aayu") && !hints.contains("Hey Ayumitra"), "wake bias hints lost");
         result.putString("recognition_intent", "PASS");
         result.putString("result", "ALL_PASS");
       } catch (Throwable error) {

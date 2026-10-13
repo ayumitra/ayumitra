@@ -1,6 +1,6 @@
 # Local voice input
 
-Tap the microphone to speak a command, or enable **Hey Ayumitra** while the companion screen is open. Pronounce the name **aa-yuh-mit-ra**: *ayu* (age) and *mitra* (friend). Say “Hey Ayumitra, show my reports,” or say the wake phrase first and then your command. Final recognized speech follows the normal chat path and is saved as a user turn in that profile’s encrypted conversation.
+Tap the microphone to speak a command, or enable **Ayu** wake listening while the companion screen is open. Say “Ayu” (pronounced **aa-yuh**), as in “Ayu, show my reports,” or say “Ayu” first and then your command. The app remains named Ayumitra. Final recognized speech follows the normal chat path and is saved as a user turn in that profile’s encrypted conversation.
 
 Voice input is explicit-tap, foreground-only, English-only, and strictly
 on-device. There is no cloud fallback, no network audio, no model download,
@@ -12,6 +12,8 @@ no audio storage, and no background or always-on hotword service.
   - `capabilities` → `{available, onDevice, platform, reason?}`. `onDevice`
     is true whenever `available` is true: this bridge has no server mode.
     `reason` is present only when unavailable, and always truthful.
+    Capabilities confirm only that an on-device speech backend exists;
+    actual language support and microphone readiness require `start`.
   - `requestPermission` → bool. Requests the microphone (plus speech
     recognition on iOS) and completes with the grant result. A second call
     while one is in flight fails with `PERMISSION_PENDING`. Dart calls this
@@ -23,7 +25,9 @@ no audio storage, and no background or always-on hotword service.
   - `stop` → void. Ends the live session and emits `stopped` exactly once.
     Stopping an idle bridge succeeds with no event.
 - EventChannel `app.ayumitra/voice_events` emits
-  `{type: partial|final|error|stopped, sessionId: int, text?, code?, reason?}`.
+  `{type: partial|final|error|stopped|ready, sessionId: int, text?, code?, reason?}`.
+  `ready` fires once per session — actual Android `onReadyForSpeech`, iOS
+  engine/task initialized — and Dart shows starting until it arrives.
   Android accepts the full 64-bit Dart session identifier without narrowing it. Every session event echoes the `start` call's id, captured per session —
   native never re-reads a mutable id when a queued callback runs, and keeps
   its independent generation guards. Dart strictly rejects events whose id
@@ -37,10 +41,20 @@ no audio storage, and no background or always-on hotword service.
   `createOnDeviceSpeechRecognizer` only. `createSpeechRecognizer` is never
   used. Below API 31, `capabilities` reports unavailable with the reason.
 - English (`EXTRA_LANGUAGE`) with `EXTRA_PREFER_OFFLINE`; on API 33+,
-  `checkRecognitionSupport` must additionally confirm installed on-device
-  English (`installedOnDeviceLanguages`) before listening, otherwise the
-  session fails closed with `LANGUAGE_UNAVAILABLE`. Listening uses an actually installed English locale: device-default English first, then en-US, then another installed English locale. An installed en-IN pack never causes an uninstalled en-US pack to be selected. Below API 33, en-US is the default. There is no non-English or server fallback.
-- On Android 13+, recognition receives local phrase-biasing hints for “Hey Ayumitra” and “Hey Ayu Mitra.” The matcher accepts narrowly spelled aa-yuh variants and word/hyphen boundaries, requires the whole name at the beginning, and ignores generic “hey you” or names merely mentioned in other speech.
+  `checkRecognitionSupport` reads support metadata to prefer actually
+  installed English (device-default English if installed, else en-US, else
+  another installed English locale). Missing installed-model metadata is not
+  proof English is unavailable: the same on-device recognizer — never a
+  server recognizer — then attempts the selected English locale, and the
+  recognizer's actual `LANGUAGE_UNAVAILABLE` / `LANGUAGE_NOT_SUPPORTED`
+  errors are reported truthfully. Explicitly non-English support is refused.
+  If the metadata query itself cannot run, the same local instance proceeds
+  with standard en-US; the English display locale en-DE is not assumed to
+  be a supported speech-model tag.
+  Below API 33, en-US is the default. There is
+  no model downloader, no non-English fallback, and no server fallback;
+  privacy is unchanged (no cloud, no app download).
+- On Android 13+, recognition receives local phrase-biasing hints for “Ayu” and narrowly spelled aa-yuh variants. The matcher requires the wake name at the beginning and ignores generic speech that merely mentions other words.
 - `RECORD_AUDIO` manifest entry plus a `RecognitionService` package-visibility
   query. Runtime permission is requested only from `requestPermission`;
   `start` without it emits `PERMISSION_REQUIRED`.
@@ -62,9 +76,12 @@ no audio storage, and no background or always-on hotword service.
 
 - Wake listening pauses while the assistant is busy, on another screen, or in the background. Switching profiles or conversations stops the microphone and rejects late events from the prior session. Silent sessions restart with bounded backoff.
 - Audio is not saved; recognized commands are stored as encrypted chat text. Browser voice is disabled because this client has no verified on-device speech backend.
-- Availability is device-dependent: Android needs an installed
-  on-device recognition service with an English pack; iOS needs OS-level
-  on-device support. `capabilities` is the source of truth on each device.
+- Availability is device-dependent: Android needs an on-device recognition
+  service, and an English pack may be reported, installed, or missing — the
+  bridge attempts the selected English locale on the same local backend and
+  reports the recognizer's actual language errors. iOS needs OS-level
+  on-device support. `capabilities` confirms only that a backend exists;
+  actual language support and readiness require `start`.
 - Continuous ASR is battery-heavy by design: this POC listens only while
   the app is foreground and explicitly enabled. A production background
   hotword engine is future work — do not call this bridge always-on voice.
@@ -80,7 +97,7 @@ fields against the actual native bridge. It neither captures audio nor reads
 profile data. Instrumentation stops the app process; relaunch afterward.
 
 `checks/android_voice_smoke.dart` is a separate manual speech test. Say
-“Hey aa-yuh-mit-ra, show my reports” with microphone permission and an
+“Ayu (aa-yuh), show my reports” with microphone permission and an
 installed English speech model. It logs only whether that synthetic command
 matched, never recognized text. It reports a timeout rather than claiming a
 pass when no command arrived. Native argument tests and text-matcher tests
@@ -91,3 +108,11 @@ its system-model download request did not finish during verification. This
 blocks actual speech recognition there. The app fails closed with the missing
 English-model message and never uses a cloud recognizer. A device with an
 installed offline English model is needed for the remaining spoken check.
+On the connected Samsung S24, a temporary developer
+instrumentation package (outside the repo, no microphone/audio/health
+access) downloaded the OS English asset to 100% and was then removed — the
+app production code contains no model downloader. Actual microphone READY
+was confirmed on the S24 before shortening the wake name to Ayu. The Ayu
+Android build and matcher tests pass; installation and a real spoken-command
+check on the phone remain pending its USB reconnection. No spoken command
+pass is claimed on any device yet. The emulator missing-asset case above is still not a spoken pass.

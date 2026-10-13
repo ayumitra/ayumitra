@@ -131,6 +131,27 @@ void main() {
       expect(voice.permissionDenied, isTrue);
     }, permission: false);
   });
+  test('readiness comes only from the owning native microphone callback', () {
+    scenario((time, native, voice, commands) {
+      startWake(time, voice);
+      expect(voice.readyForSpeech, isFalse);
+      expect(voice.status, 'Starting on-device speech…');
+      native.emit('ready', sessionId: native.startIds.last - 1);
+      time.flushMicrotasks();
+      expect(voice.readyForSpeech, isFalse);
+      native.emit('ready');
+      time.flushMicrotasks();
+      expect(voice.readyForSpeech, isTrue);
+      expect(voice.status, contains('Listening for'));
+      unawaited(voice.suspend(true));
+      time.flushMicrotasks();
+      expect(voice.readyForSpeech, isFalse);
+      native.emit('ready');
+      time.flushMicrotasks();
+      expect(voice.readyForSpeech, isFalse);
+      expect(commands, isEmpty);
+    });
+  });
   test('push-to-talk echoes partial text and dispatches one final', () {
     scenario((time, native, voice, commands) {
       unawaited(voice.startPushToTalk());
@@ -151,100 +172,65 @@ void main() {
       expect(native.starts, 1);
     });
   });
-  test(
-    'wake mode ignores non-wake speech and strips only a leading exact phrase',
-    () {
-      scenario((time, native, voice, commands) {
-        startWake(time, voice);
-        for (final ignored in [
-          'Find my reports',
-          'Please hey Ayumitra find reports',
-          'Hey Ayumitraville find reports',
-        ]) {
-          native.emit('final', text: ignored);
-          nextRun(time);
-        }
-        expect(commands, isEmpty);
-        native.emit('final', text: 'Hey, Ayumitra: Find my reports');
+  test('Ayu must lead the utterance and strips only the wake prefix', () {
+    scenario((time, native, voice, commands) {
+      startWake(time, voice);
+      for (final ignored in [
+        'Find my reports',
+        'Please Ayu find reports',
+        'Someone said Ayu find reports',
+        'Ayurveda find reports',
+        'Ayumitra find reports',
+        'Ayush find reports',
+        'Are you show my reports',
+        'Hey you show reports',
+      ]) {
+        native.emit('final', text: ignored);
         nextRun(time);
-        native.emit('final', text: 'hey ayu mitra show my medicines');
-        time.flushMicrotasks();
-        expect(commands, ['Find my reports', 'show my medicines']);
-      });
-    },
-  );
-  test('aa-yuh-mit-ra pronunciation spellings retain the exact command', () {
+      }
+      expect(commands, isEmpty);
+      expect(voice.wakeArmed, isFalse);
+      native.emit('final', text: 'Ayu: Find my reports');
+      nextRun(time);
+      native.emit('final', text: 'Hey, Ayu, show my medicines');
+      time.flushMicrotasks();
+      expect(commands, ['Find my reports', 'show my medicines']);
+    });
+  });
+  test('aa-yuh spelling variants retain command numbers and punctuation', () {
     scenario((time, native, voice, commands) {
       startWake(time, voice);
       for (final prefix in [
-        'Hey Ayumitra',
-        'Hey Ayu Mitra',
-        'Hey Aayu Mitra',
-        'Hey Ayuh Mitra',
-        'Hey Ah Yuh Mitra',
-        'Hey Ah Yu Mitra',
-        'Hey Ah Yoo Mitra',
-        'Hey Ayu-Mitra',
-        'Hey Ayu–Mitra',
-        'Hey Aa Yuh Mit Ra',
-        'Hey aa-yuh-mit-ra',
+        'Ayu',
+        'Aayu',
+        'Ayuh',
+        'Aayuh',
+        'Aa Yuh',
+        'aa-yuh',
+        'Hey Ayu',
       ]) {
         final command = 'Save $prefix test: Hb 13.5 on 2026-03-14';
         native.emit('final', text: '$prefix, $command');
         nextRun(time);
         expect(commands.last, command);
       }
-      expect(commands, hasLength(11));
+      expect(commands, hasLength(7));
     });
   });
-  test(
-    'nearby names, generic hey-you and nonleading phrases do not activate',
-    () {
-      scenario((time, native, voice, commands) {
-        startWake(time, voice);
-        for (final text in [
-          'Hey you show reports',
-          'Hey Ayu show reports',
-          'Hey Mitra show reports',
-          'Hey Ayu Mitral valve',
-          'Hey Ayu Mitraville show reports',
-          'Hey Aayu Mitras show reports',
-          'Someone said Hey Ah Yuh Mitra',
-        ]) {
-          native.emit('final', text: text);
-          nextRun(time);
-        }
-        expect(commands, isEmpty);
-        expect(voice.wakeArmed, isFalse);
-      });
-    },
-  );
-  test('pronunciation-spaced wake alone arms only one subsequent command', () {
+  test('Ayu alone arms one command and expires after 30 seconds', () {
     scenario((time, native, voice, commands) {
       startWake(time, voice);
-      native.emit('final', text: 'Hey Ah Yuh Mitra!');
-      nextRun(time);
-      expect(voice.wakeArmed, isTrue);
-      native.emit('final', text: 'Show my records');
-      nextRun(time);
-      expect(commands, ['Show my records']);
-      expect(voice.wakeArmed, isFalse);
-      native.emit('final', text: 'Unaddressed speech');
-      nextRun(time);
-      expect(commands, ['Show my records']);
-    });
-  });
-  test('wake-only phrase arms one command and expires after 30 seconds', () {
-    scenario((time, native, voice, commands) {
-      startWake(time, voice);
-      native.emit('final', text: 'Hey Ayumitra');
+      native.emit('final', text: 'Ayu!');
       nextRun(time);
       expect(voice.wakeArmed, isTrue);
       native.emit('final', text: 'Find my report');
       nextRun(time);
       expect(commands, ['Find my report']);
       expect(voice.wakeArmed, isFalse);
-      native.emit('final', text: 'Hey Ayu Mitra');
+      native.emit('final', text: 'Unaddressed speech');
+      nextRun(time);
+      expect(commands, ['Find my report']);
+      native.emit('final', text: 'Aa Yuh');
       nextRun(time);
       expect(voice.wakeArmed, isTrue);
       time.elapse(const Duration(seconds: 30));
@@ -266,7 +252,7 @@ void main() {
         time.flushMicrotasks();
         time.elapse(const Duration(seconds: 5));
         time.flushMicrotasks();
-        native.emit('final', text: 'Hey Ayumitra send this');
+        native.emit('final', text: 'Ayu send this');
         time.flushMicrotasks();
         expect(native.starts, 1);
         expect(commands, isEmpty);
@@ -356,15 +342,11 @@ void main() {
         time.flushMicrotasks();
         startWake(time, voice);
         expect(native.startIds.last, isNot(oldId));
-        native.emit(
-          'final',
-          text: 'Hey Ayumitra old profile command',
-          sessionId: oldId,
-        );
+        native.emit('final', text: 'Ayu old profile command', sessionId: oldId);
         time.flushMicrotasks();
         expect(commands, isEmpty);
         expect(voice.listening, isTrue);
-        native.emit('final', text: 'Hey Ayumitra current command');
+        native.emit('final', text: 'Ayu current command');
         time.flushMicrotasks();
         expect(commands, ['current command']);
       });

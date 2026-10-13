@@ -299,18 +299,11 @@ object LocalVoiceBridge {
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
             putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
             if (Build.VERSION.SDK_INT >= 33) {
-                // API 33 on-device biasing: exact wake phrases only,
-                // pronounced aa-yuh-mit-ra. Not broadened, no cloud involved.
+                // Local hints for Ayu, pronounced aa-yuh. No fuzzy or
+                // generic "are you" wake matching and no cloud path.
                 putStringArrayListExtra(
                     RecognizerIntent.EXTRA_BIASING_STRINGS,
-                    arrayListOf(
-                        "Hey Ayumitra",
-                        "Hey Ayu Mitra",
-                        "Ayumitra",
-                        "Ayu Mitra",
-                        "Hey Aayu Mitra",
-                        "Hey Ayuh Mitra",
-                    ),
+                    arrayListOf("Ayu", "Aayu", "Ayuh", "Hey Ayu"),
                 )
             }
         }
@@ -342,12 +335,19 @@ object LocalVoiceBridge {
                         // en-IN/en-GB here while starting an uninstalled en-US
                         // would fail the listen. Below API 33 there is no
                         // support query, so the en-US default stands.
-                        val locale = selectInstalledEnglish(installed)
+                        val supported = try {
+                            support.supportedOnDeviceLanguages
+                        } catch (_: Exception) { null }
+                        // A provider can report incomplete installed-model metadata.
+                        // Only the on-device factory was used. Let that same local
+                        // recognizer attempt supported English and report actual
+                        // LANGUAGE_UNAVAILABLE if it cannot load the model.
+                        val locale = selectRecognitionEnglish(installed, supported)
                         if (locale == null) {
                             failSession(
                                 myGeneration,
                                 "LANGUAGE_UNAVAILABLE",
-                                "English on-device recognition is not installed.",
+                                "This on-device recognizer does not support English.",
                             )
                             return
                         }
@@ -356,11 +356,14 @@ object LocalVoiceBridge {
 
                     override fun onError(error: Int) {
                         Log.e(TAG, "support check error code=$error")
-                        failSession(
-                            myGeneration,
-                            "SUPPORT_CHECK_FAILED",
-                            "On-device English support could not be verified.",
-                        )
+                        if (error == SpeechRecognizer.ERROR_CANNOT_CHECK_SUPPORT) {
+                            // Unsupported metadata query is not permission to use
+                            // a server recognizer: keep this same local instance.
+                            beginListening(current, myGeneration, defaultEnglish())
+                        } else {
+                            failSession(myGeneration, "SUPPORT_CHECK_FAILED",
+                                "On-device English support could not be verified.")
+                        }
                     }
                 },
             )
@@ -372,6 +375,19 @@ object LocalVoiceBridge {
                 "On-device English support could not be verified.",
             )
         }
+    }
+
+    private fun defaultEnglish(): String = LANGUAGE
+    // The device's display locale (e.g. en-DE) is not necessarily a speech
+    // model locale. Use installed/supported tags when reported, otherwise
+    // request standard en-US from the same strictly on-device recognizer.
+
+    private fun selectRecognitionEnglish(installed: List<String>?, supported: List<String>?): String? {
+        selectInstalledEnglish(installed)?.let { return it }
+        selectInstalledEnglish(supported)?.let { return it }
+        // Explicit non-English support is different from missing metadata.
+        if (!supported.isNullOrEmpty()) return null
+        return defaultEnglish()
     }
 
     /// Picks the locale to actually start listening with: device-default
@@ -418,6 +434,7 @@ object LocalVoiceBridge {
             return
         }
         try {
+            Log.i(TAG, "on-device recognition locale=$locale")
             current.startListening(listenIntent(locale))
         } catch (e: Exception) {
             Log.e(TAG, "startListening: ${e.javaClass.simpleName}")
@@ -494,7 +511,10 @@ object LocalVoiceBridge {
     // event, so a stale callback can never be tagged as a newer session.
     private class VoiceListener(private val owner: Int, private val session: Long) :
         RecognitionListener {
-        override fun onReadyForSpeech(params: Bundle?) = Unit
+        override fun onReadyForSpeech(params: Bundle?) {
+            if (owner != LocalVoiceBridge.generation || !LocalVoiceBridge.sessionActive) return
+            LocalVoiceBridge.emit(mapOf("type" to "ready", "sessionId" to session))
+        }
         override fun onBeginningOfSpeech() = Unit
         override fun onRmsChanged(rmsdB: Float) = Unit
         override fun onBufferReceived(buffer: ByteArray?) = Unit
@@ -565,6 +585,8 @@ object LocalVoiceBridge {
         SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "RECOGNIZER_BUSY"
         SpeechRecognizer.ERROR_SERVER -> "SERVER"
         SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "SPEECH_TIMEOUT"
+        SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE -> "LANGUAGE_UNAVAILABLE"
+        SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED -> "LANGUAGE_NOT_SUPPORTED"
         else -> "RECOGNITION_ERROR"
     }
 
@@ -579,6 +601,8 @@ object LocalVoiceBridge {
         SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "The on-device recognizer is busy."
         SpeechRecognizer.ERROR_SERVER -> "The on-device recognition service failed."
         SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "No speech was heard before the timeout."
+        SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE -> "The local English speech model is unavailable. Install an offline English speech pack in your device's speech settings."
+        SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED -> "This on-device recognizer does not support the requested English locale."
         else -> "On-device recognition failed without using the network."
     }
 }

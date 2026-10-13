@@ -192,6 +192,9 @@ final class LocalVoiceBridge: NSObject {
           isFinal: result?.isFinal ?? false, error: error as NSError?
         )
       }
+      if owner == generation && sessionActive {
+        emit(["type": "ready", "sessionId": sessionId])
+      }
     } catch {
       failSession(
         owner: owner, code: "START_FAILED",

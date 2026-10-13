@@ -17,7 +17,7 @@ Android and iOS are both target platforms. EmbeddingGemma 2 generates search emb
 | Lifelong history | Build a history organized by clinical date, age at event, and category, with source-linked Markdown summaries. |
 | Search | Find records by meaning using EmbeddingGemma 2 locally. |
 | Local intelligence | Use one local LLM with separate system prompts for organizing, extraction, and summarization. |
-| Conversation | Use text and voice as the main interface; support “Hey Ayumitra” commands where feasible. |
+| Conversation | Use text and voice as the main interface; support “Ayu” (aa-yuh) voice commands where feasible. |
 | Image understanding | Interpret images; image-based diagnosis is part of the longer-term vision. |
 | Medicines | Track medicines being taken, answer information questions using internet sources, and maintain schedules. |
 | Sharing | Generate an anonymized report for the user to review and share. |
@@ -116,7 +116,7 @@ Enforce profile ownership across files, facts, keyword results, vectors, medicin
 
 - **EmbeddingGemma 2** is an open-weight model intended for local and offline multimodal embedding workflows. It is the selected embedding model family for Ayumitra; the variant and device performance still need evaluation. See [Google's EmbeddingGemma documentation](https://ai.google.dev/gemma/docs/embeddinggemma).
 - **LiteRT-LM** documents Android and iOS support. Its Kotlin API is stable and Swift integration is currently an early preview. Evaluate runtime, model, memory, latency, and thermal behavior on actual target phones before selecting the mobile framework. See [LiteRT-LM's overview](https://developers.google.com/edge/litert-lm/overview).
-- **iOS background execution is limited.** Therefore the initial design should support push-to-talk and foreground wake-word listening, and separately investigate system integrations for invocation outside the app. Always-on background “Hey Ayumitra” should remain an unverified capability. See [Apple's background execution documentation](https://developer.apple.com/documentation/xcode/configuring-background-execution-modes).
+- **iOS background execution is limited.** Therefore the initial design should support push-to-talk and foreground wake-word listening, and separately investigate system integrations for invocation outside the app. Always-on background “Ayu” listening should remain an unverified capability. See [Apple's background execution documentation](https://developer.apple.com/documentation/xcode/configuring-background-execution-modes).
 
 These technology facts were checked on 12 October 2026; model quality and device suitability have not been tested in this project.
 

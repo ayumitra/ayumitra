@@ -31,6 +31,7 @@ class LocalVoice extends ChangeNotifier with WidgetsBindingObserver {
   int? _lastFinalHash;
   VoiceMode mode = VoiceMode.idle;
   bool available = false, onDevice = false, listening = false;
+  bool readyForSpeech = false;
   bool onDeviceChecked = false;
   bool wakeEnabled = false, wakeArmed = false, permissionDenied = false;
   String platform = '', partialText = '', status = '', failure = '';
@@ -142,14 +143,11 @@ class LocalVoice extends ChangeNotifier with WidgetsBindingObserver {
       if (!_current(generation)) return;
       partialText = '';
       failure = '';
+      readyForSpeech = false;
       listening = true;
       _accepting = true;
       _activeStartId = ++_nextStartId;
-      status = mode == VoiceMode.foregroundWake
-          ? (wakeArmed
-                ? 'Listening for your command…'
-                : 'Listening for “Hey Ayumitra”…')
-          : 'Listening on this device…';
+      status = 'Starting on-device speech…';
       _changed();
       await channel.invokeMethod<void>('start', {'sessionId': _activeStartId});
     } on MissingPluginException {
@@ -191,6 +189,14 @@ class LocalVoice extends ChangeNotifier with WidgetsBindingObserver {
       return;
     }
     final type = value['type'];
+    if (type == 'ready') {
+      readyForSpeech = true;
+      status = mode == VoiceMode.foregroundWake
+          ? (wakeArmed ? 'Listening for your command…' : 'Listening for “Ayu”…')
+          : 'Listening on this device…';
+      _changed();
+      return;
+    }
     if (type == 'partial') {
       partialText = value['text'] is String ? value['text'] as String : '';
       _changed();
@@ -244,9 +250,9 @@ class LocalVoice extends ChangeNotifier with WidgetsBindingObserver {
         _dispatch(text);
       } else if (mode == VoiceMode.foregroundWake) {
         final wake = RegExp(
-          // Narrow spelling variants of aa-yuh-mit-ra, including ASR word
-          // boundaries. Require the complete name after a leading Hey.
-          r'^hey\s+(?:a{1,2}yuh?|(?:aa|ah)[\s–—-]+(?:yuh?|yoo))[\s–—-]*mit[\s–—-]*ra\b',
+          // Ayu (aa-yuh) must lead the utterance as a whole name. An
+          // optional Hey is accepted; generic "are you" is not a wake name.
+          r'^(?:hey\s+)?(?:a{1,2}yuh?|(?:aa|ah)[\s–—-]+yuh?)\b',
           caseSensitive: false,
         ).firstMatch(text.replaceAll(RegExp(r'[,.:;!?]'), ' '));
         if (wake != null) {
@@ -260,7 +266,7 @@ class LocalVoice extends ChangeNotifier with WidgetsBindingObserver {
             _armTimer?.cancel();
             _armTimer = Timer(const Duration(seconds: 30), () {
               wakeArmed = false;
-              if (_canWake) status = 'Listening for “Hey Ayumitra”…';
+              if (_canWake) status = 'Listening for “Ayu”…';
               _changed();
             });
           } else {
@@ -290,6 +296,7 @@ class LocalVoice extends ChangeNotifier with WidgetsBindingObserver {
     _accepting = false;
     _activeStartId = null;
     listening = false;
+    readyForSpeech = false;
     partialText = '';
     final generation = _generation;
     await _nativeStop();
@@ -322,6 +329,7 @@ class LocalVoice extends ChangeNotifier with WidgetsBindingObserver {
     _restartTimer = null;
     _accepting = false;
     listening = false;
+    readyForSpeech = false;
     partialText = '';
     if (clearArm) _clearArm();
     await _nativeStop();
@@ -384,6 +392,7 @@ class LocalVoice extends ChangeNotifier with WidgetsBindingObserver {
     _activeStartId = null;
     _permissionPending = false;
     listening = false;
+    readyForSpeech = false;
     partialText = '';
     _restartTimer?.cancel();
     _armTimer?.cancel();

@@ -87,21 +87,26 @@ not prove microphone transcription or wake activation on a physical phone.
 
 ## Updating without discarding emulator data
 
-The Flutter install retry can uninstall an existing app after a low-storage
-failure. Use an explicit update that stops on failure instead:
+A low-storage install failure can lead to the existing app being removed.
+Use an explicit update where any install failure aborts instead:
 
 ```sh
 flutter build apk --debug --target-platform android-arm64 --target lib/main_emulator.dart
 adb -s emulator-5554 install -r build/app/outputs/flutter-apk/app-debug.apk
 ```
 
-After a successful install, preserve Flutter's checksum metadata and launch
-the already-installed binary without a redundant update:
+If the manual `install -r` fails, stop and fix storage first; never
+uninstall an app containing saved profiles to recover space — an uninstall
+wipes its encrypted vault.
+
+Launch the app through the Android developer tool after the update succeeds:
 
 ```sh
-adb -s emulator-5554 push build/app/outputs/flutter-apk/app-debug.apk.sha1 /data/local/tmp/sky.app.ayumitra.ayumitra.sha1
-flutter run -d emulator-5554 -t lib/main_emulator.dart --use-application-binary build/app/outputs/flutter-apk/app-debug.apk
+adb -s emulator-5554 shell am start -n app.ayumitra.ayumitra/.MainActivity
 ```
 
-If the explicit install fails, fix storage before proceeding; do not uninstall
-an app containing saved profiles.
+Pushing the APK checksum or passing `--use-application-binary` does not
+skip Flutter's install step: `AndroidDevice.startApp` runs `installApp`
+in Flutter 3.44. A later `flutter run` can therefore attempt another update
+and its uninstall retry after a failed installation. Use the explicit SDK
+update and launch above when preserving saved emulator profiles.
