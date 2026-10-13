@@ -55,3 +55,4 @@ artifacts/
 
 # Live agent coordination stays in the local workspace.
 comms.md
+old_comms.md

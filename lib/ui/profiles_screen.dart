@@ -13,8 +13,13 @@ import '../domain/records.dart';
 /// DOB entry is a picker plus a strict YYYY-MM-DD field; future dates are
 /// refused locally before anything reaches the controller.
 class ProfilesScreen extends StatefulWidget {
-  const ProfilesScreen({super.key, required this.controller});
+  const ProfilesScreen({super.key, required this.controller, this.onViewFiles});
   final AppController controller;
+
+  /// Optional file-library entry: when set, each person gets a folder
+  /// button that selects them before opening their library. Kept optional
+  /// so existing push sites without library wiring are unaffected.
+  final void Function(Profile profile)? onViewFiles;
   @override
   State<ProfilesScreen> createState() => _ProfilesScreenState();
 }
@@ -155,10 +160,26 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
                   '${profile.isChild ? 'Child' : 'Adult'} profile',
                 ),
                 isThreeLine: true,
-                trailing: IconButton(
-                  tooltip: 'Edit profile',
-                  onPressed: c.busy ? null : () => _editForm(profile),
-                  icon: const Icon(Icons.edit_outlined),
+                trailing: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (widget.onViewFiles != null)
+                      IconButton(
+                        tooltip: 'View files',
+                        onPressed: c.busy
+                            ? null
+                            : () async {
+                                await c.selectProfile(profile.id);
+                                widget.onViewFiles!.call(profile);
+                              },
+                        icon: const Icon(Icons.folder_outlined),
+                      ),
+                    IconButton(
+                      tooltip: 'Edit profile',
+                      onPressed: c.busy ? null : () => _editForm(profile),
+                      icon: const Icon(Icons.edit_outlined),
+                    ),
+                  ],
                 ),
                 onTap: c.busy ? null : () => c.selectProfile(profile.id),
               ),

@@ -5,19 +5,20 @@ An English-speaking medical companion for Android and iOS, built for a child and
 ## First development slice
 
 - Onboarding with date of birth and optional user-provided history; separate family profiles with editable details.
-- Encrypted original reports and an authenticated encrypted record/search index.
-- Saved conversations and user-stated memory scoped to each profile. Deleting a conversation removes its memory without deleting reports.
+- Encrypted original reports and an authenticated encrypted record/search index. A profile file library lists every stored original, including files that could not be parsed.
+- Saved conversations and user-stated memory scoped to each profile. Chat updates are available immediately and across sessions, with each message’s provided date; explicit user event dates take precedence. Deleting a conversation removes its memory without deleting reports.
 - File or rear-camera report import, with scoped temporary-copy cleanup.
+- English microphone input and opt-in “Hey Ayumitra” listening while the companion screen is open, using strictly on-device speech recognition. Voice stops offscreen or during processing; unavailable local speech never falls back to cloud recognition.
 - Local PDF text extraction and an imported local Gemma 4 vision model for scan/photo transcription; transcripts require review.
 - Local organizer/extractor/summarizer/planner prompts using one assistant model.
 - Clinical-date/category organization, DOB-based age-at-event labels, and Markdown summaries.
-- Source-page highlights, editable facts, and corrections retained across reprocessing.
+- Source-page highlights, editable facts, and corrections retained across reprocessing. Answers retain only the files and public web sources actually cited; rejected answers clearly label retrieved excerpts as fallback evidence.
 - EmbeddingGemma 2 search through a native bridge, with local keyword search available during setup/failure.
-- A bounded planner that can combine private-record and public-web searches in one answer.
+- A bounded planner that can combine private-record and public-web searches in one answer. Malformed tool plans get two structure-guided retries, with strict validation before any tool runs; exhausted plan repairs use local record search only. Invalid answer references also receive two controlled repair attempts before evidence fallback; updates must cite their conversation provenance.
 - Autonomous or user-requested extended thinking for bounded research: the local model plans and assesses up to three rounds/six public searches, then answers locally from collected evidence.
 - Brave Search integration with a key stored in platform secure storage; query-only requests and local result summarization.
 
-This is a development prototype, not a finished medical application. Model quality, clinical accuracy, and performance on the Samsung S24 Ultra still need measurement. Voice, foreground wake word, medicine reminders, de-identified sharing, portable backup/restore, and large-history database optimization remain later work. Current report imports support PDF, PNG/JPG, and UTF-8 text up to 30 MB and 30 PDF pages.
+This is a development prototype, not a finished medical application. Model quality, clinical accuracy, and performance on the Samsung S24 Ultra still need measurement. Background wake-word listening, medicine reminders, de-identified sharing, portable backup/restore, and large-history database optimization remain later work. Current report imports support PDF, PNG/JPG, and UTF-8 text up to 30 MB and 30 PDF pages.
 
 ## Run
 
@@ -29,11 +30,17 @@ For an Android development APK:
 flutter build apk --debug --target-platform android-arm64
 ```
 
+For emulator tests using the Mac’s local Gemma 4 and EmbeddingGemma 2, use the [debug localhost bridge](docs/android-emulator-testing.md). It retains the native encrypted vault, but inference runs on the host computer; it does not measure phone performance. The normal app entrypoint uses on-device model files.
+
 This build uses development signing. Store distribution and production signing are not configured.
 
 In the app's setup screen, choose a local `.litertlm` assistant model and its matching family (scan transcription currently requires a vision-capable Gemma 4), and a local **EmbeddingGemma 2** `.litertlm` file. The app copies weights into its own local storage. Weights are not included in the repository or downloaded by the app. Start with synthetic reports in `docs/eval-fixtures/` and the built-in synthetic text example. The app does not pretend to have AI responses when weights are absent.
 
 Web search is optional for the offline record flow. Configure a Brave Search API key once in settings to let the local planner use it automatically. The planner can choose extended thinking on its own, or the user can request it. A visible status identifies that mode while the assistant checks additional general public sources within a bounded research budget; private records and identifying details remain local. Without the key or connectivity, web search reports its unavailability; it never becomes cloud inference. Retrieved web content cannot request tool calls. External source links open only when the user taps them.
+
+Background entered at profile creation becomes the first visible user turn and seeds that profile’s conversation memory. An empty background creates no initial conversation. Deleting the seeded conversation removes its turns and derived memory; the separate editable profile background remains until changed.
+
+User-reported updates take priority for the current explanation while original report values remain dated history. The assistant searches owned reports for corroboration; only matching findings and compatible event dates support a report reference. Without corroboration, the update remains user-reported and the assistant asks for a report. Questions and hypothetical values are not treated as clinical findings.
 
 Native conversations, complete turns, profile memory, and originals are saved in the encrypted vault. Each profile remembers its selected conversation when you switch people. There is no fixed conversation-count limit; memory excerpts and model context are bounded separately. Conversation memory contains user-stated context, not verified clinical evidence, and remains separate from report facts. Previous assistant statements cannot become memory used to authorize tools. Legacy age-only profiles keep their approximate age information until the user supplies a date of birth; migration does not invent one. Editing a birth date clears that person's saved report summaries so their age-at-event information can be regenerated.
 
@@ -52,7 +59,7 @@ complete report text.
 
 Tests cover authenticated storage, tampering, profile/session isolation and deletion, encrypted conversation restoration, user-only contextual recall, embedding identity/dimension checks, source validation, correction persistence, age/date organization, web-query filtering, and onboarding/history UI. These checks do not measure real-model medical accuracy.
 
-[Product brief](docs/product-brief.md) · [Evaluation plan](docs/eval-plan.md) · [Synthetic fixtures](docs/eval-fixtures/manifest.json)
+[Local voice setup and limits](docs/local-voice.md) · [Product brief](docs/product-brief.md) · [Evaluation plan](docs/eval-plan.md) · [Synthetic fixtures](docs/eval-fixtures/manifest.json)
 
 ## Local browser client
 

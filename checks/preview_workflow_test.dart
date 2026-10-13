@@ -106,6 +106,8 @@ void main() {
     () async {
       final controller = await _ready();
       addTearDown(controller.dispose);
+      final activities = <String>[];
+      controller.addListener(() => activities.add(controller.activity));
       await controller.importBytes('blood.txt', 'txt', _reportBytes());
       expect(controller.reports, hasLength(1));
       final report = controller.reports.single;
@@ -131,6 +133,15 @@ void main() {
       expect(
         answer.hits.every((h) => h.report.profileId == controller.profile!.id),
         isTrue,
+      );
+      // Each tool announced itself; finished steps stay in the timeline.
+      expect(activities, contains('Searching your saved reports…'));
+      expect(
+        controller.stepLog,
+        containsAll([
+          'Recalling earlier conversation…',
+          'Searching your saved reports…',
+        ]),
       );
       // Transcript persisted to the session with user + assistant turns.
       expect(
@@ -228,6 +239,32 @@ void main() {
     final answer = controller.messages.last;
     expect(answer.text.startsWith('**Extended thinking**'), isTrue);
     expect(answer.text, contains('[user-history]'));
+  });
+
+  test('profile background seeds first-turn memory at create', () async {
+    final controller = await _ready(history: 'Allergic to penicillin.');
+    addTearDown(controller.dispose);
+    // Seeded session with one user turn; visible transcript + memory.
+    final session = controller.activeSession!;
+    expect(session.turns, hasLength(1));
+    expect(session.turns.single.role, 'user');
+    expect(session.turns.single.text, contains('Allergic to penicillin.'));
+    expect(controller.messages.first.isUser, isTrue);
+    expect(controller.messages.first.text, contains('Allergic to penicillin.'));
+    final memory = controller.data.memories.singleWhere(
+      (memory) => memory.sessionId == session.id,
+    );
+    expect(memory.text, contains('Allergic to penicillin.'));
+    expect(memory.profileId, controller.profile!.id);
+  });
+
+  test('empty history seeds no session or memory', () async {
+    final controller = await _ready();
+    addTearDown(controller.dispose);
+    expect(controller.data.sessions, isEmpty);
+    expect(controller.data.memories, isEmpty);
+    expect(controller.messages, isEmpty);
+    expect(controller.activeSessionId, isNull);
   });
 
   test('reload clears the in-memory vault by design', () async {

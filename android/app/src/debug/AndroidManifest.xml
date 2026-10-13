@@ -4,4 +4,6 @@
          to allow setting breakpoints, to provide hot reload, etc.
     -->
     <uses-permission android:name="android.permission.INTERNET"/>
+    <!-- Debug localhost bridge only; release keeps all cleartext refused. -->
+    <application android:networkSecurityConfig="@xml/debug_loopback_network"/>
 </manifest>

@@ -304,10 +304,12 @@ void main() {
       final finalMessage = controller.messages.last;
       expect(finalMessage.text.startsWith('**Extended thinking**'), isTrue);
       expect(finalMessage.text, contains('[web-11]'));
-      // All 11 refs persist in the transcript with unique IDs.
+      // Retrieval covers all rounds, but only the actually cited discovery
+      // is presented and persisted as an answer reference.
       final saved = await vault.read();
       final stored = saved.sessions.single.turns.last.webSources;
-      expect(stored.map((s) => s.id).toSet(), hasLength(11));
+      expect(finalMessage.web.map((s) => s.id), ['web-11']);
+      expect(stored.map((s) => s.id), ['web-11']);
     },
   );
 

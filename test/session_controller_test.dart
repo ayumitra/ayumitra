@@ -24,6 +24,14 @@ class SessionIntelligence extends LocalIntelligence {
       return '{"actions":[{"action":"conversation","query":""}]}';
     }
     answerInputs.add(payload);
+    if (instruction.startsWith(summaryPrompt) ||
+        instruction.startsWith(userObservationPrompt)) {
+      final current = payload['currentSessionUserContext'] as Map?;
+      final recalled = payload['userStatedConversationMemories'] as List;
+      final source =
+          current?['sourceId'] ?? (recalled.first as Map)['sourceId'];
+      return 'ASSISTANT_ONLY_MARKER [$source]';
+    }
     return 'ASSISTANT_ONLY_MARKER';
   }
 }
@@ -42,7 +50,10 @@ class RecallIntelligence extends LocalIntelligence {
     final payload = Map<String, dynamic>.from(jsonDecode(input) as Map);
     if (instruction == plannerPrompt) return plan;
     answerInputs.add(payload);
-    return 'SYNTHETIC ANSWER WITHOUT CITATIONS';
+    final current = payload['currentSessionUserContext'] as Map?;
+    final recalled = payload['userStatedConversationMemories'] as List? ?? [];
+    final source = current?['sourceId'] ?? (recalled.first as Map)['sourceId'];
+    return 'SYNTHETIC ANSWER [$source]';
   }
 }
 
@@ -68,6 +79,92 @@ void main() {
     controller.dispose();
     await directory.delete(recursive: true);
   });
+
+  test(
+    'profile background persists as a user turn before the first model call',
+    () async {
+      const background =
+          'Synthetic background: penicillin allergy noted by caregiver.';
+      await controller.createProfile(
+        'Synthetic A',
+        DateTime(2020),
+        background,
+        true,
+      );
+      final owner = controller.profile!.id;
+      final seededId = controller.activeSessionId!;
+      expect(intelligence.plannerInputs, isEmpty);
+      expect(intelligence.answerInputs, isEmpty);
+      expect(controller.messages.single.isUser, isTrue);
+      final saved = await vault.read();
+      expect(saved.activeSessionByProfile[owner], seededId);
+      expect(saved.sessions.single.turns.single.role, 'user');
+      expect(saved.sessions.single.turns.single.text, contains(background));
+      expect(saved.memories.single.profileId, owner);
+      expect(saved.memories.single.sessionId, seededId);
+      expect(saved.memories.single.text, contains(background));
+
+      await controller.ask('Hello, what can you help me with?');
+      expect(
+        (intelligence.plannerInputs.single['recentUserRequests'] as List)
+            .join(),
+        contains(background),
+      );
+      expect(
+        controller.activeSession!.title,
+        'Hello, what can you help me with?',
+      );
+      expect(controller.activeSession!.turns, hasLength(3));
+      expect(
+        controller.data.memories.single.text,
+        isNot(contains('ASSISTANT_ONLY_MARKER')),
+      );
+
+      await controller.createProfile('Synthetic B', DateTime(1990), '', false);
+      expect(controller.activeSessionId, isNull);
+      expect(controller.messages, isEmpty);
+      await controller.ask('Hello from profile B');
+      expect(
+        jsonEncode(intelligence.plannerInputs.last),
+        isNot(contains(background)),
+      );
+      expect(
+        jsonEncode(intelligence.answerInputs.last),
+        isNot(contains(background)),
+      );
+      await controller.selectProfile(owner);
+      expect(controller.activeSessionId, seededId);
+      expect(controller.messages.first.text, contains(background));
+      await controller.deleteConversation(seededId);
+      expect(controller.sessions, isEmpty);
+      expect(
+        controller.data.memories.where((m) => m.profileId == owner),
+        isEmpty,
+      );
+      // Deleting conversation memory does not erase the separate profile field.
+      expect(controller.profile!.history, background);
+      final afterDelete = await vault.read();
+      expect(afterDelete.sessions.where((s) => s.profileId == owner), isEmpty);
+      expect(afterDelete.memories.where((m) => m.profileId == owner), isEmpty);
+    },
+  );
+
+  test(
+    'empty profile background creates no initial session or memory',
+    () async {
+      await controller.createProfile(
+        'Synthetic empty',
+        DateTime(2000),
+        '  ',
+        false,
+      );
+      final saved = await vault.read();
+      expect(saved.sessions, isEmpty);
+      expect(saved.memories, isEmpty);
+      expect(controller.messages, isEmpty);
+      expect(controller.activeSessionId, isNull);
+    },
+  );
 
   test(
     'DOB profiles save, edit, and reject a future DOB without data loss',
@@ -226,7 +323,7 @@ void main() {
         expect(reopened.activeSessionId, firstId);
         expect(reopened.messages.map((m) => m.text), [
           'Remember SYNTHETIC_RESTART_MARKER',
-          'ASSISTANT_ONLY_MARKER',
+          'ASSISTANT_ONLY_MARKER [conversation:$firstId]',
         ]);
         await reopened.selectConversation(secondId);
         expect(reopened.messages.first.text, 'A second synthetic conversation');
@@ -289,7 +386,7 @@ void main() {
 
       final answer = intelligence.answerInputs.last;
       expect(
-        jsonEncode(answer['userStatedContext']),
+        jsonEncode(answer['userStatedConversationMemories']),
         contains('A_ONLY_CONTEXT'),
       );
       expect(jsonEncode(answer), isNot(contains('B_ONLY_CONTEXT')));
@@ -342,13 +439,15 @@ void main() {
       expect(await controller.original(report), original);
 
       await controller.newConversation();
+      final callsBeforeRecall = intelligence.answerInputs.length;
       await controller.ask('Recall orchid');
+      expect(intelligence.answerInputs.length, callsBeforeRecall);
       expect(
-        jsonEncode(intelligence.answerInputs.last),
+        controller.messages.last.text,
         isNot(contains('DELETE_MEMORY_MARKER')),
       );
       expect(
-        jsonEncode(intelligence.answerInputs.last),
+        controller.messages.last.text,
         isNot(contains('B_RETAINED_CONTEXT')),
       );
     },
@@ -375,18 +474,24 @@ void main() {
         final stored = local.data.memories.single.text;
         expect(stored.indexOf('SYNTHETIC_LATER_MARKER') > 1500, isTrue);
 
-        // Conversation path in a fresh session.
+        // A non-greeting conversation classification now takes the grounded
+        // answer path, with the same recalled source as a record-search plan.
         await local.newConversation();
         await local.ask('What did I note about zephyrin?');
         final convoInput = recall.answerInputs.last;
-        final context = (convoInput['userStatedContext'] as List).join('\n');
+        final recalled = convoInput['userStatedConversationMemories'] as List;
+        final context = recalled.map((row) => (row as Map)['text']).join('\n');
         expect(context, contains('SYNTHETIC_LATER_MARKER'));
         expect(context, contains('User turn '));
         expect(context, contains('user-stated'));
         expect(context, isNot(contains('SYNTHETIC ANSWER')));
-        for (final entry in convoInput['userStatedContext'] as List) {
-          expect((entry as String).length, lessThanOrEqualTo(1500));
+        for (final entry in recalled) {
+          expect(
+            ((entry as Map)['text'] as String).length,
+            lessThanOrEqualTo(1000),
+          );
         }
+        expect(local.messages.last.text, contains('[conversation:$originId]'));
 
         // Summary path with the same recall.
         recall.plan = '{"action":"search_records","query":"zephyrin note"}';
@@ -408,9 +513,11 @@ void main() {
         // Other profiles never receive the statement.
         await local.createProfile('Synthetic B', DateTime(2010), '', true);
         recall.plan = '{"action":"conversation","query":""}';
+        final callsBeforeOtherProfile = recall.answerInputs.length;
         await local.ask('What about zephyrin?');
+        expect(recall.answerInputs.length, callsBeforeOtherProfile);
         expect(
-          (recall.answerInputs.last['userStatedContext'] as List).join(),
+          local.messages.last.text,
           isNot(contains('SYNTHETIC_LATER_MARKER')),
         );
 
@@ -418,9 +525,11 @@ void main() {
         await local.selectProfile(a);
         await local.deleteConversation(originId);
         await local.newConversation();
+        final callsAfterDelete = recall.answerInputs.length;
         await local.ask('What did I note about zephyrin?');
+        expect(recall.answerInputs.length, callsAfterDelete);
         expect(
-          (recall.answerInputs.last['userStatedContext'] as List).join(),
+          local.messages.last.text,
           isNot(contains('SYNTHETIC_LATER_MARKER')),
         );
       } finally {

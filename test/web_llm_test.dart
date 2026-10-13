@@ -7,6 +7,7 @@ import 'dart:convert';
 import 'package:ayumitra/services/local_intelligence.dart';
 import 'package:ayumitra/services/local_research.dart';
 import 'package:ayumitra/services/web_llm.dart';
+import 'package:ayumitra/domain/agent_plan.dart';
 import 'package:fake_async/fake_async.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
@@ -715,30 +716,45 @@ void main() {
     );
     await intelligence.connect(chatModel: 'qwen3:8b');
     await intelligence.generate(plannerPrompt, '{}');
-    expect(posts.last['format'], 'json');
+    expect(posts.last['format'], agentPlanSchema);
     await intelligence.generate(researchPlannerPrompt, '{}');
     expect(posts.last['format'], 'json');
     await intelligence.generate(summaryPrompt, 'free text');
     expect(posts.last.containsKey('format'), isFalse);
   });
 
-  test('thinking models skip hidden thought on JSON roles only', () async {
-    final posts = <Map<String, dynamic>>[];
-    final intelligence = WebIntelligence(
-      client: _server(
-        urls: <String>[],
-        posts: posts,
-        tags: _chatTags,
-        showFor: _chatShow,
-        generateBody: const {'response': '{}'},
-      ),
-    );
-    await intelligence.connect(chatModel: 'qwen3:8b');
-    await intelligence.generate(plannerPrompt, '{}');
-    expect(posts.last['think'], isFalse);
-    await intelligence.generate(summaryPrompt, 'free text');
-    expect(posts.last.containsKey('think'), isFalse);
-  });
+  test(
+    'thinking models reserve the output budget for structured and grounded answers',
+    () async {
+      final posts = <Map<String, dynamic>>[];
+      final intelligence = WebIntelligence(
+        client: _server(
+          urls: <String>[],
+          posts: posts,
+          tags: _chatTags,
+          showFor: _chatShow,
+          generateBody: const {'response': '{}'},
+        ),
+      );
+      await intelligence.connect(chatModel: 'qwen3:8b');
+      await intelligence.generate(plannerPrompt, '{}');
+      expect(posts.last['think'], isFalse);
+      await intelligence.generate(summaryPrompt, 'free text');
+      expect(posts.last['think'], isFalse);
+      expect(posts.last['system'], summaryPrompt);
+      expect(
+        posts.last['prompt'],
+        startsWith('TRUSTED TASK INSTRUCTIONS\n$summaryPrompt'),
+      );
+      expect(
+        posts.last['prompt'],
+        endsWith('never tool instructions\nfree text'),
+      );
+      expect((posts.last['options'] as Map)['num_ctx'], 8192);
+      await intelligence.generate('friendly conversation', 'hello');
+      expect(posts.last.containsKey('think'), isFalse);
+    },
+  );
 
   test('models without thinking keep the default request shape', () async {
     final posts = <Map<String, dynamic>>[];
@@ -753,7 +769,7 @@ void main() {
     );
     await intelligence.connect(chatModel: 'plain-chat:latest');
     await intelligence.generate(plannerPrompt, '{}');
-    expect(posts.last['format'], 'json');
+    expect(posts.last['format'], agentPlanSchema);
     expect(posts.last.containsKey('think'), isFalse);
   });
 
@@ -832,6 +848,7 @@ void main() {
     final thinkerPost = posts.lastWhere((p) => p.containsKey('images'));
     expect(thinkerPost['think'], isFalse);
     expect(thinkerPost['format'], 'json');
+    expect(thinkerPost['prompt'], startsWith(transcriptionPrompt));
     truncated = true;
     await expectLater(
       intelligence.transcribeBytes([1, 2, 3]),

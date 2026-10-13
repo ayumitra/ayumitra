@@ -1,5 +1,37 @@
 import 'dart:convert';
 
+/// Generation constraint for local servers that support structured output.
+/// Plans are still independently checked by [validateAgentPlan] before tools run.
+const agentPlanSchema = <String, Object>{
+  'type': 'object',
+  'additionalProperties': false,
+  'required': ['actions'],
+  'properties': {
+    'actions': {
+      'type': 'array',
+      'minItems': 1,
+      'maxItems': 3,
+      'items': {
+        'type': 'object',
+        'additionalProperties': false,
+        'required': ['action', 'query'],
+        'properties': {
+          'action': {
+            'type': 'string',
+            'enum': [
+              'search_records',
+              'web_search',
+              'conversation',
+              'extended_thinking',
+            ],
+          },
+          'query': {'type': 'string', 'maxLength': 500},
+        },
+      },
+    },
+  },
+};
+
 class AgentAction {
   const AgentAction(this.tool, this.query);
   final String tool, query;

@@ -13,5 +13,24 @@ class MainActivity : FlutterActivity() {
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         LocalEmbeddingBridge.register(flutterEngine, this)
+        LocalVoiceBridge.register(flutterEngine, this)
+    }
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<String>,
+        grantResults: IntArray,
+    ) {
+        if (!LocalVoiceBridge.onRequestPermissionsResult(requestCode, permissions, grantResults)) {
+            super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        }
+    }
+    override fun onPause() {
+        super.onPause()
+        // Foreground-only voice: release the mic when leaving the screen.
+        LocalVoiceBridge.onHostPause()
+    }
+    override fun onDestroy() {
+        LocalVoiceBridge.onHostDestroy()
+        super.onDestroy()
     }
 }

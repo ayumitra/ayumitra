@@ -4,6 +4,10 @@
          stays in the on-device vault. required=false keeps devices without a
          camera installable; the plugin also requests runtime permission. -->
     <uses-permission android:name="android.permission.CAMERA"/>
+    <!-- Microphone is used only for explicit-tap on-device English speech
+         input (no background listening, no audio storage, no network audio).
+         Runtime permission is requested only after the user starts voice. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO"/>
     <uses-feature android:name="android.hardware.camera" android:required="false"/>
     <application
         android:allowBackup="false"
@@ -51,6 +55,11 @@
         <intent>
             <action android:name="android.intent.action.PROCESS_TEXT"/>
             <data android:mimeType="text/plain"/>
+        </intent>
+        <!-- On-device speech runs through an installed RecognitionService;
+             package visibility is required to resolve it on API 30+. -->
+        <intent>
+            <action android:name="android.speech.RecognitionService"/>
         </intent>
     </queries>
 </manifest>

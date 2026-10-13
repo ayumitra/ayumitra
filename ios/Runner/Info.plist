@@ -26,6 +26,10 @@
 	<string>Ayumitra uses the camera only when you tap “Scan with camera”, to photograph a medical report into your on-device vault. Photos never leave this phone unless you explicitly share them.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>Ayumitra reads only the photo you select, to save it as a medical report in your on-device vault.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Ayumitra uses the microphone only when you start voice input, to transcribe your words on this device. Audio is never stored or uploaded.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Ayumitra transcribes your voice input on this device to fill in your question. Transcripts stay in the app and are never uploaded.</string>
 	<key>CFBundleVersion</key>
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
 	<key>LSRequiresIPhoneOS</key>

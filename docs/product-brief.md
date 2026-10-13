@@ -1,6 +1,6 @@
 # Ayumitra product brief
 
-Updated 12 October 2026. Implementation has started with a Flutter development prototype targeting Samsung S24 Ultra first. This separates the founder's vision from implementation recommendations and decisions still open.
+Updated 13 October 2026. Implementation has started with a Flutter development prototype targeting Samsung S24 Ultra first. This separates the founder's vision from implementation recommendations and decisions still open.
 
 ## Purpose
 
@@ -12,7 +12,7 @@ Android and iOS are both target platforms. EmbeddingGemma 2 generates search emb
 
 | Capability | Intended experience |
 | --- | --- |
-| First use | Ask for age and an optional previous medical history summary as the starting point; English input/output in v1. |
+| First use | Ask for date of birth and optional previous history; the history seeds a visible first user turn and profile-scoped memory. English input/output in v1. |
 | Record import | Accept medical reports from files, scans, and photographs, preserving the originals. |
 | Lifelong history | Build a history organized by clinical date, age at event, and category, with source-linked Markdown summaries. |
 | Search | Find records by meaning using EmbeddingGemma 2 locally. |

@@ -13,12 +13,25 @@ import UniformTypeIdentifiers
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)
   }
 
+  // Foreground-only voice: release the mic when leaving the app. There is
+  // no background service and no always-on hotword engine.
+  override func applicationWillResignActive(_ application: UIApplication) {
+    LocalVoiceBridge.shared.handleAppBackground()
+    super.applicationWillResignActive(application)
+  }
+
+  override func applicationWillTerminate(_ application: UIApplication) {
+    LocalVoiceBridge.shared.handleAppTerminate()
+    super.applicationWillTerminate(application)
+  }
+
   func didInitializeImplicitFlutterEngine(_ engineBridge: FlutterImplicitEngineBridge) {
     GeneratedPluginRegistrant.register(with: engineBridge.pluginRegistry)
     guard let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "AyumitraPrivacy") else { return }
     let channel = FlutterMethodChannel(name: "app.ayumitra/privacy", binaryMessenger: registrar.messenger())
     privacyChannel = channel
     LocalEmbeddingBridge.register(messenger: registrar.messenger())
+    LocalVoiceBridge.register(messenger: registrar.messenger())
     let picker = AyumitraFilePicker()
     localPicker = picker
     let pickerChannel = FlutterMethodChannel(name: "app.ayumitra/picker", binaryMessenger: registrar.messenger())

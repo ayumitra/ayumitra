@@ -1,9 +1,12 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:intl/intl.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../services/local_file_picker.dart';
+import '../services/local_voice.dart';
 import '../services/web_llm.dart';
 import '../app_controller.dart';
 import '../domain/conversations.dart';
@@ -11,10 +14,12 @@ import '../domain/records.dart';
 import '../domain/retrieval.dart';
 import 'source_screen.dart';
 import 'profiles_screen.dart';
+import 'profile_files_screen.dart';
 import 'second_opinion_screen.dart';
 
 const ink = Color(0xff203f38);
 const canvas = Color(0xfff7f8f2);
+final companionRouteObserver = RouteObserver<PageRoute<dynamic>>();
 
 class AyumitraApp extends StatelessWidget {
   const AyumitraApp({super.key, required this.controller});
@@ -23,6 +28,7 @@ class AyumitraApp extends StatelessWidget {
   Widget build(BuildContext context) => MaterialApp(
     title: 'Ayumitra',
     debugShowCheckedModeBanner: false,
+    navigatorObservers: [companionRouteObserver],
     theme: ThemeData(
       useMaterial3: true,
       scaffoldBackgroundColor: canvas,
@@ -294,6 +300,8 @@ class _OnboardingState extends State<Onboarding> {
                         child: Text(
                           widget.controller.isPreview
                               ? 'Add your own documents below. Everything stays in this tab’s memory and clears on reload; intelligence comes only from your localhost model server.'
+                              : isEmulatorBridge(widget.controller)
+                              ? 'Development testing only — this is not on-device inference. Your records stay encrypted on this Android device; the assistant’s models run on your Mac through a USB/emulator localhost bridge. No cloud.'
                               : 'Your records and AI stay on this phone. The assistant can search public web information; it never uploads your reports.',
                           style: const TextStyle(fontSize: 13, height: 1.5),
                         ),
@@ -337,20 +345,131 @@ class _OnboardingState extends State<Onboarding> {
 }
 
 class CompanionScreen extends StatefulWidget {
-  const CompanionScreen({super.key, required this.controller});
+  const CompanionScreen({
+    super.key,
+    required this.controller,
+    this.voiceFactory,
+  });
   final AppController controller;
+  final LocalVoice Function(void Function(String))? voiceFactory;
   @override
   State<CompanionScreen> createState() => _CompanionScreenState();
 }
 
-class _CompanionScreenState extends State<CompanionScreen> {
+class _CompanionScreenState extends State<CompanionScreen> with RouteAware {
   final input = TextEditingController();
   int section = 0;
   String? category;
   String? selectedAge;
   AppController get c => widget.controller;
+  late final LocalVoice voice;
+  String? voiceProfileId, voiceSessionId;
+  bool routeVisible = true;
+  PageRoute<dynamic>? observedRoute;
+
+  @override
+  void initState() {
+    super.initState();
+    voiceProfileId = c.activeProfileId;
+    voiceSessionId = c.activeSessionId;
+    voice =
+        widget.voiceFactory?.call(_voiceCommand) ??
+        LocalVoice(onCommand: _voiceCommand);
+    voice.addListener(_voiceChanged);
+    c.addListener(_controllerChanged);
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final route = ModalRoute.of(context);
+    if (route is PageRoute<dynamic> && route != observedRoute) {
+      companionRouteObserver.unsubscribe(this);
+      observedRoute = route;
+      companionRouteObserver.subscribe(this, route);
+    }
+  }
+
+  void _voiceChanged() {
+    if (mounted) setState(() {});
+  }
+
+  void _controllerChanged() {
+    if (!mounted) return;
+    if (c.activeProfileId != voiceProfileId ||
+        (c.activeSessionId != voiceSessionId && !c.busy)) {
+      // An utterance captured for one person/chat cannot land in another.
+      input.clear();
+      unawaited(voice.stop());
+    }
+    voiceProfileId = c.activeProfileId;
+    voiceSessionId = c.activeSessionId;
+    _syncVoice();
+  }
+
+  void _syncVoice() =>
+      unawaited(voice.suspend(c.busy || section != 0 || !routeVisible));
+
+  void _setSection(int value) {
+    setState(() => section = value);
+    _syncVoice();
+  }
+
+  @override
+  void didPushNext() {
+    routeVisible = false;
+    _syncVoice();
+  }
+
+  @override
+  void didPopNext() {
+    routeVisible = true;
+    _syncVoice();
+  }
+
+  @override
+  void didPush() {
+    routeVisible = true;
+    _syncVoice();
+  }
+
+  @override
+  void didPop() {
+    routeVisible = false;
+    _syncVoice();
+  }
+
+  void _voiceCommand(String command) {
+    if (!mounted ||
+        !routeVisible ||
+        section != 0 ||
+        c.busy ||
+        c.activeProfileId != voiceProfileId ||
+        command.trim().isEmpty) {
+      return;
+    }
+    final draft = input.text.trim();
+    input.text = draft.isEmpty ? command.trim() : '$draft ${command.trim()}';
+    unawaited(_send());
+  }
+
+  Future<void> _toggleMicrophone() async {
+    if (c.busy || !routeVisible) return;
+    if (voice.listening || voice.wakeEnabled) {
+      await voice.stop();
+      return;
+    }
+    voiceProfileId = c.activeProfileId;
+    voiceSessionId = c.activeSessionId;
+    await voice.startPushToTalk();
+  }
+
   @override
   void dispose() {
+    companionRouteObserver.unsubscribe(this);
+    c.removeListener(_controllerChanged);
+    voice.removeListener(_voiceChanged);
+    voice.dispose();
     input.dispose();
     conversationScroll.dispose();
     super.dispose();
@@ -398,6 +517,32 @@ class _CompanionScreenState extends State<CompanionScreen> {
       builder: (_) => ReportScreen(controller: c, reportId: r.id),
     ),
   );
+
+  /// Opens the per-profile file library. Callers pass the owning profile id;
+  /// the screen itself guards against stale routes after a profile switch.
+  void _openFileLibrary(String profileId) {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => ProfileFilesScreen(
+          controller: c,
+          profileId: profileId,
+          onOpenReport: openReport,
+          onOpenOriginal: (report) => Navigator.of(context).push(
+            MaterialPageRoute(
+              builder: (_) => SourceScreen(controller: c, report: report),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Folder entry from profile management: the tapped person becomes active
+  /// before their library opens, so the library never shows a mix.
+  /// Delegates to the shared top-level opener so the settings entry reuses
+  /// the exact same select-then-push flow.
+  Future<void> _viewProfileFiles(Profile profile) =>
+      openProfileFileLibrary(context, c, profile);
   final scaffoldKey = GlobalKey<ScaffoldState>();
   final conversationScroll = ScrollController();
   String? _renderedSession;
@@ -410,7 +555,7 @@ class _CompanionScreenState extends State<CompanionScreen> {
     await c.newConversation();
     if (!mounted) return;
     input.clear();
-    setState(() => section = 0);
+    _setSection(0);
     _closeDrawer();
   }
 
@@ -419,7 +564,7 @@ class _CompanionScreenState extends State<CompanionScreen> {
     await c.selectConversation(id);
     if (!mounted) return;
     input.clear();
-    setState(() => section = 0);
+    _setSection(0);
     _closeDrawer();
   }
 
@@ -449,9 +594,12 @@ class _CompanionScreenState extends State<CompanionScreen> {
 
   Future<void> _manageProfiles() async {
     _closeDrawer();
-    await Navigator.of(
-      context,
-    ).push(MaterialPageRoute(builder: (_) => ProfilesScreen(controller: c)));
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) =>
+            ProfilesScreen(controller: c, onViewFiles: _viewProfileFiles),
+      ),
+    );
     if (!mounted) return;
     input.clear();
     setState(() {
@@ -461,11 +609,12 @@ class _CompanionScreenState extends State<CompanionScreen> {
     });
   }
 
-  Widget _sidebar() => SafeArea(
-    child: Padding(
-      padding: const EdgeInsets.fromLTRB(14, 20, 14, 14),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+  Widget _sidebar() => Material(
+    type: MaterialType.transparency,
+    child: SafeArea(
+      child: ListView(
+        key: const Key('companion-navigation'),
+        padding: const EdgeInsets.fromLTRB(14, 20, 14, 14),
         children: [
           const Padding(
             padding: EdgeInsets.only(left: 10, bottom: 24),
@@ -550,52 +699,96 @@ class _CompanionScreenState extends State<CompanionScreen> {
               style: TextStyle(fontSize: 10, letterSpacing: 1.6, color: ink),
             ),
           ),
-          Expanded(
-            child: c.sessions.isEmpty
-                ? const Padding(
-                    padding: EdgeInsets.all(10),
-                    child: Text(
-                      'Your conversations will appear here.',
-                      style: TextStyle(fontSize: 13, height: 1.5),
-                    ),
-                  )
-                : ListView.builder(
-                    itemCount: c.sessions.length,
-                    itemBuilder: (context, index) {
-                      final session = c.sessions[index];
-                      return Padding(
-                        padding: const EdgeInsets.only(bottom: 4),
-                        child: ListTile(
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(14),
-                          ),
-                          selected:
-                              c.activeSession?.id == session.id && section == 0,
-                          selectedTileColor: const Color(0xffe3eee5),
-                          dense: true,
-                          title: Text(
-                            session.title,
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                          subtitle: Text(
-                            DateFormat.MMMd().format(session.updatedAt),
-                            style: const TextStyle(fontSize: 11),
-                          ),
-                          onTap: c.busy
-                              ? null
-                              : () => _selectConversation(session.id),
-                          trailing: IconButton(
-                            tooltip: 'Delete conversation',
-                            icon: const Icon(Icons.delete_outline, size: 17),
-                            onPressed: c.busy
-                                ? null
-                                : () => _deleteConversation(session),
-                          ),
-                        ),
-                      );
-                    },
+          if (c.sessions.isEmpty)
+            const Padding(
+              padding: EdgeInsets.all(10),
+              child: Text(
+                'Your conversations will appear here.',
+                style: TextStyle(fontSize: 13, height: 1.5),
+              ),
+            )
+          else
+            for (final session in c.sessions)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 4),
+                child: ListTile(
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(14),
                   ),
+                  selected: c.activeSession?.id == session.id && section == 0,
+                  selectedTileColor: const Color(0xffe3eee5),
+                  dense: true,
+                  title: Text(
+                    session.title,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  subtitle: Text(
+                    DateFormat.MMMd().format(session.updatedAt),
+                    style: const TextStyle(fontSize: 11),
+                  ),
+                  onTap: c.busy ? null : () => _selectConversation(session.id),
+                  trailing: IconButton(
+                    tooltip: 'Delete conversation',
+                    icon: const Icon(Icons.delete_outline, size: 17),
+                    onPressed: c.busy
+                        ? null
+                        : () => _deleteConversation(session),
+                  ),
+                ),
+              ),
+          const Divider(),
+          const Padding(
+            padding: EdgeInsets.only(left: 10, top: 8, bottom: 8),
+            child: Text(
+              'FILES',
+              style: TextStyle(fontSize: 10, letterSpacing: 1.6, color: ink),
+            ),
+          ),
+          if (c.reports.isEmpty)
+            const Padding(
+              padding: EdgeInsets.all(10),
+              child: Text(
+                'Reports you add appear here for this profile.',
+                style: TextStyle(fontSize: 13, height: 1.5),
+              ),
+            )
+          else
+            for (final report in c.reports)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 4),
+                child: ListTile(
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                  dense: true,
+                  leading: const Icon(Icons.description_outlined, size: 20),
+                  title: Text(
+                    report.name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  subtitle: Text(
+                    '${report.type} · ${report.eventDate == null ? 'date unknown' : DateFormat.MMMd().format(report.eventDate!)}',
+                    style: const TextStyle(fontSize: 11),
+                  ),
+                  onTap: c.busy
+                      ? null
+                      : () {
+                          _closeDrawer();
+                          openReport(report);
+                        },
+                ),
+              ),
+          ListTile(
+            leading: const Icon(Icons.folder_outlined),
+            title: const Text('View files'),
+            onTap: () {
+              final id = c.activeProfileId;
+              if (id == null) return;
+              _closeDrawer();
+              _openFileLibrary(id);
+            },
           ),
           const Divider(),
           ListTile(
@@ -609,7 +802,7 @@ class _CompanionScreenState extends State<CompanionScreen> {
             // This is the only way home on wide screens, where the bottom
             // navigation bar is hidden.
             onTap: () {
-              setState(() => section = section == 1 ? 0 : 1);
+              _setSection(section == 1 ? 0 : 1);
               _closeDrawer();
             },
           ),
@@ -673,7 +866,7 @@ class _CompanionScreenState extends State<CompanionScreen> {
       leading: section == 1 && desktop
           ? IconButton(
               tooltip: 'Back to companion',
-              onPressed: () => setState(() => section = 0),
+              onPressed: () => _setSection(0),
               icon: const Icon(Icons.arrow_back),
             )
           : null,
@@ -757,6 +950,8 @@ class _CompanionScreenState extends State<CompanionScreen> {
                             ? (c.intelligence.available
                                   ? 'Local model connected · answers from your documents'
                                   : 'No local model connected — open settings to connect one')
+                            : isEmulatorBridge(c)
+                            ? 'Development bridge · models run on this Mac · documents stay encrypted here'
                             : 'Your private companion · AI stays on this device',
                         style: const TextStyle(fontSize: 11, color: ink),
                       ),
@@ -770,8 +965,40 @@ class _CompanionScreenState extends State<CompanionScreen> {
                 ),
               if (c.busy)
                 Padding(
-                  padding: const EdgeInsets.all(8),
-                  child: Text(c.activity, style: const TextStyle(fontSize: 12)),
+                  padding: const EdgeInsets.fromLTRB(20, 8, 20, 4),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      for (final step
+                          in c.stepLog.length <= 6
+                              ? c.stepLog
+                              : c.stepLog.sublist(c.stepLog.length - 6))
+                        Padding(
+                          padding: const EdgeInsets.only(bottom: 2),
+                          child: Row(
+                            children: [
+                              const Icon(
+                                Icons.check_circle_outline,
+                                size: 13,
+                                color: ink,
+                              ),
+                              const SizedBox(width: 6),
+                              Expanded(
+                                child: Text(
+                                  step,
+                                  style: const TextStyle(
+                                    fontSize: 11,
+                                    color: ink,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      if (c.activity.isNotEmpty)
+                        Text(c.activity, style: const TextStyle(fontSize: 12)),
+                    ],
+                  ),
                 ),
               if (c.failure != null)
                 Padding(
@@ -792,7 +1019,7 @@ class _CompanionScreenState extends State<CompanionScreen> {
         ? null
         : NavigationBar(
             selectedIndex: section,
-            onDestinationSelected: (value) => setState(() => section = value),
+            onDestinationSelected: _setSection,
             destinations: const [
               NavigationDestination(
                 icon: Icon(Icons.chat_bubble_outline),
@@ -868,6 +1095,10 @@ class _CompanionScreenState extends State<CompanionScreen> {
       itemCount: c.messages.length,
       itemBuilder: (context, index) {
         final message = c.messages[index];
+        final turns = c.activeSession?.turns;
+        final providedAt = turns != null && index < turns.length
+            ? turns[index].createdAt
+            : null;
         return Align(
           alignment: message.isUser
               ? Alignment.centerRight
@@ -887,6 +1118,19 @@ class _CompanionScreenState extends State<CompanionScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
+                if (providedAt != null)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 6),
+                    child: Text(
+                      DateFormat(
+                        'MMM d, yyyy · HH:mm',
+                      ).format(providedAt.toLocal()),
+                      style: const TextStyle(
+                        fontSize: 11,
+                        color: Color(0xff64756d),
+                      ),
+                    ),
+                  ),
                 SelectionArea(
                   child: MarkdownBody(
                     data: _linkedMarkdown(message),
@@ -988,71 +1232,125 @@ class _CompanionScreenState extends State<CompanionScreen> {
           SourceScreen(controller: c, report: hit.report, line: hit.line),
     ),
   );
-  Widget _composer() => Container(
-    margin: const EdgeInsets.fromLTRB(14, 4, 14, 14),
-    padding: const EdgeInsets.fromLTRB(8, 8, 8, 6),
-    decoration: BoxDecoration(
-      color: Colors.white,
-      borderRadius: BorderRadius.circular(24),
-      border: Border.all(color: const Color(0xffdfe7dd)),
-    ),
-    child: Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Row(
-          crossAxisAlignment: CrossAxisAlignment.end,
-          children: [
-            IconButton(
-              tooltip: c.isPreview ? 'Add your report' : 'Attach a report',
-              onPressed: c.busy ? null : attach,
-              icon: const Icon(Icons.add_circle_outline),
-            ),
-            Expanded(
-              child: TextField(
-                controller: input,
-                minLines: 1,
-                maxLines: 5,
-                enabled: !c.busy,
-                decoration: const InputDecoration(
-                  hintText: 'Talk to Ayumitra…',
-                  fillColor: Colors.white,
-                ),
-                textInputAction: TextInputAction.send,
-                onSubmitted: (_) => _send(),
+  Widget _composer() {
+    _syncVoice();
+    return Container(
+      margin: const EdgeInsets.fromLTRB(14, 4, 14, 14),
+      padding: const EdgeInsets.fromLTRB(8, 8, 8, 6),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(24),
+        border: Border.all(color: const Color(0xffdfe7dd)),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              IconButton(
+                tooltip: c.isPreview ? 'Add your report' : 'Attach a report',
+                onPressed: c.busy ? null : attach,
+                icon: const Icon(Icons.add_circle_outline),
               ),
-            ),
-            const SizedBox(width: 4),
-            IconButton.filled(
-              tooltip: 'Send message',
-              onPressed: c.busy ? null : _send,
-              icon: const Icon(Icons.arrow_upward),
-            ),
-          ],
-        ),
-        Align(
-          alignment: Alignment.centerLeft,
-          child: Padding(
-            padding: const EdgeInsets.only(left: 8, top: 2),
-            child: Tooltip(
-              message: c.isPreview
-                  ? 'Give your local model more time to work through your question.'
-                  : 'Give the local assistant more time to work through your question.',
-              child: FilterChip(
-                avatar: const Icon(Icons.psychology_outlined, size: 17),
-                label: const Text(
-                  'Extended thinking',
-                  style: TextStyle(fontSize: 12),
+              Expanded(
+                child: TextField(
+                  controller: input,
+                  minLines: 1,
+                  maxLines: 5,
+                  enabled: !c.busy,
+                  decoration: const InputDecoration(
+                    hintText: 'Talk to Ayumitra…',
+                    fillColor: Colors.white,
+                  ),
+                  textInputAction: TextInputAction.send,
+                  onSubmitted: (_) => _send(),
                 ),
-                selected: c.extendedThinking,
-                onSelected: c.busy ? null : c.setExtendedThinking,
-                visualDensity: VisualDensity.compact,
+              ),
+              if (!c.isPreview)
+                IconButton(
+                  tooltip: voice.listening
+                      ? 'Stop microphone'
+                      : 'Speak to Ayumitra',
+                  onPressed: c.busy ? null : _toggleMicrophone,
+                  icon: Icon(voice.listening ? Icons.mic : Icons.mic_none),
+                  color: voice.listening ? Colors.red : ink,
+                ),
+              const SizedBox(width: 4),
+              IconButton.filled(
+                tooltip: 'Send message',
+                onPressed: c.busy ? null : _send,
+                icon: const Icon(Icons.arrow_upward),
+              ),
+            ],
+          ),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: Padding(
+              padding: const EdgeInsets.only(left: 8, top: 2),
+              child: Wrap(
+                spacing: 8,
+                children: [
+                  Tooltip(
+                    message: c.isPreview
+                        ? 'Give your local model more time to work through your question.'
+                        : 'Give the local assistant more time to work through your question.',
+                    child: FilterChip(
+                      avatar: const Icon(Icons.psychology_outlined, size: 17),
+                      label: const Text(
+                        'Extended thinking',
+                        style: TextStyle(fontSize: 12),
+                      ),
+                      selected: c.extendedThinking,
+                      onSelected: c.busy ? null : c.setExtendedThinking,
+                      visualDensity: VisualDensity.compact,
+                    ),
+                  ),
+                  if (!c.isPreview)
+                    Tooltip(
+                      message:
+                          'On-device listening while this screen is open. Stops in the background; no cloud speech.',
+                      child: FilterChip(
+                        avatar: const Icon(Icons.hearing, size: 17),
+                        label: const Text(
+                          'Hey Ayumitra',
+                          style: TextStyle(fontSize: 12),
+                        ),
+                        selected: voice.wakeEnabled,
+                        onSelected: c.busy
+                            ? null
+                            : (enabled) {
+                                voiceProfileId = c.activeProfileId;
+                                voiceSessionId = c.activeSessionId;
+                                unawaited(voice.setWakeEnabled(enabled));
+                              },
+                        visualDensity: VisualDensity.compact,
+                      ),
+                    ),
+                ],
               ),
             ),
           ),
-        ),
-      ],
-    ),
-  );
+          if (voice.listening || voice.failure.isNotEmpty || voice.wakeEnabled)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 6, 12, 4),
+              child: Text(
+                voice.failure.isNotEmpty
+                    ? voice.failure
+                    : voice.partialText.isNotEmpty
+                    ? voice.partialText
+                    : voice.status,
+                style: TextStyle(
+                  fontSize: 12,
+                  color: voice.failure.isNotEmpty ? Colors.brown : ink,
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
   Future<void> _send() async {
     final question = input.text.trim();
     if (question.isEmpty) return;
@@ -1177,6 +1475,49 @@ String statusLabel(ReportStatus status) => switch (status) {
   ReportStatus.failed => 'Retry needed',
 };
 
+/// True for the debug-only emulator bridge: a native (non-preview)
+/// controller speaking to a localhost model server through
+/// WebIntelligence/WebEmbeddings. Labels must not promise on-device
+/// inference there — models run on the developer's Mac.
+bool isEmulatorBridge(AppController controller) =>
+    !controller.isPreview &&
+    controller.intelligence is WebIntelligence &&
+    controller.embeddings is WebEmbeddings;
+
+/// Shared per-profile file-library opener for both Manage-profiles entries
+/// (companion sidebar flow and settings flow). Selects [profile] first so the
+/// library never shows a mix, then pushes [ProfileFilesScreen] with callbacks
+/// to the existing report/original screens. Top level in this file so both
+/// states can use it with no circular import.
+Future<void> openProfileFileLibrary(
+  BuildContext context,
+  AppController controller,
+  Profile profile,
+) async {
+  await controller.selectProfile(profile.id);
+  if (!context.mounted) return;
+  Navigator.of(context).push(
+    MaterialPageRoute(
+      builder: (_) => ProfileFilesScreen(
+        controller: controller,
+        profileId: profile.id,
+        onOpenReport: (report) => Navigator.of(context).push(
+          MaterialPageRoute(
+            builder: (_) =>
+                ReportScreen(controller: controller, reportId: report.id),
+          ),
+        ),
+        onOpenOriginal: (report) => Navigator.of(context).push(
+          MaterialPageRoute(
+            builder: (_) =>
+                SourceScreen(controller: controller, report: report),
+          ),
+        ),
+      ),
+    ),
+  );
+}
+
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key, required this.controller});
   final AppController controller;
@@ -1298,7 +1639,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> pickModel(bool embedding) async {
-    if (widget.controller.isPreview) return;
+    // File-based weights are production on-device builds only. Both the
+    // browser preview and the debug emulator bridge run WebIntelligence, so
+    // model picking stays disabled there.
+    if (widget.controller.intelligence is WebIntelligence) return;
     final result = await pickLocalFile(['litertlm']);
     if (result != null) {
       await widget.controller.installModel(
@@ -1314,7 +1658,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
     animation: widget.controller,
     builder: (context, _) {
       final c = widget.controller;
-      if (c.isPreview) {
+      // Local-server branch: the browser preview AND the debug-only Android
+      // emulator bridge both talk to a localhost model server through
+      // WebIntelligence/WebEmbeddings. Production native builds use on-device
+      // weights and take the branch below. Only this branch is type-gated;
+      // every other isPreview label stays as it was.
+      if (c.intelligence is WebIntelligence && c.embeddings is WebEmbeddings) {
         final intel = c.intelligence is WebIntelligence
             ? c.intelligence as WebIntelligence
             : null;
@@ -1343,11 +1692,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 style: TextStyle(fontSize: 26, fontWeight: FontWeight.w600),
               ),
               const SizedBox(height: 12),
-              const Text(
-                'This client talks only to a model server on your own machine (Ollama-compatible, localhost only). '
-                'Your documents stay in this browser tab’s memory and are sent nowhere else. '
-                'Only installed models verified as local can receive report content. This browser client clears your documents when reloaded.',
-                style: TextStyle(fontSize: 13, height: 1.5),
+              Text(
+                c.isPreview
+                    ? 'This client talks only to a model server on your own machine (Ollama-compatible, localhost only). '
+                          'Your documents stay in this browser tab’s memory; report content is processed by the local server on this computer. '
+                          'Only installed models verified as local can receive report content. This browser client clears your documents when reloaded.'
+                    : 'Development testing only — this is not on-device inference. '
+                          'Models run on this Mac through a USB/emulator localhost bridge. Originals and saved history remain encrypted on Android; report content is processed on the connected Mac. '
+                          'Only models verified as local on that machine can receive report content. No cloud.',
+                style: const TextStyle(fontSize: 13, height: 1.5),
               ),
               const SizedBox(height: 16),
               TextField(
@@ -1611,7 +1964,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ? null
                   : () => Navigator.of(context).push(
                       MaterialPageRoute(
-                        builder: (_) => ProfilesScreen(controller: c),
+                        builder: (_) => ProfilesScreen(
+                          controller: c,
+                          onViewFiles: (profile) =>
+                              openProfileFileLibrary(context, c, profile),
+                        ),
                       ),
                     ),
             ),
@@ -1660,7 +2017,11 @@ class ReportScreen extends StatelessWidget {
                 padding: const EdgeInsets.symmetric(vertical: 16),
                 child: Text(report.notice!),
               ),
-            Row(
+            // Wrap instead of Row: on narrow screens (400px and below)
+            // the two actions wrap to a second line instead of overflowing.
+            Wrap(
+              spacing: 12,
+              runSpacing: 8,
               children: [
                 OutlinedButton.icon(
                   onPressed: () => Navigator.push(
@@ -1673,7 +2034,6 @@ class ReportScreen extends StatelessWidget {
                   icon: const Icon(Icons.description_outlined),
                   label: const Text('Open original'),
                 ),
-                const SizedBox(width: 12),
                 TextButton(
                   onPressed: controller.busy
                       ? null
