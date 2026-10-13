@@ -16,7 +16,7 @@ Uint8List _bytes() =>
     Uint8List.fromList(utf8.encode('Hb 11.2 g/dL [12.0-16.0]\n'));
 
 FakeIntelligence _model() => FakeIntelligence()
-  ..organizerResponse = '{"type":"lab"}'
+  ..organizerResponse = '{"type":"lab","eventDate":null,"dateEvidence":null}'
   ..extractorResponse = jsonEncode({
     'facts': [
       {

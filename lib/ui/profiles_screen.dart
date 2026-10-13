@@ -13,8 +13,16 @@ import '../domain/records.dart';
 /// DOB entry is a picker plus a strict YYYY-MM-DD field; future dates are
 /// refused locally before anything reaches the controller.
 class ProfilesScreen extends StatefulWidget {
-  const ProfilesScreen({super.key, required this.controller, this.onViewFiles});
+  const ProfilesScreen({
+    super.key,
+    required this.controller,
+    this.onViewFiles,
+    this.createOnOpen = false,
+  });
   final AppController controller;
+
+  /// Opens a blank creation form when entering from the home Add profile button.
+  final bool createOnOpen;
 
   /// Optional file-library entry: when set, each person gets a folder
   /// button that selects them before opening their library. Kept optional
@@ -32,6 +40,12 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
   String? editingId;
   String? formError;
   AppController get c => widget.controller;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.createOnOpen) editingId = '';
+  }
 
   @override
   void dispose() {

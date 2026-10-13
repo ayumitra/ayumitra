@@ -137,6 +137,7 @@ The proposed import path remains local text/layout extraction for digital PDFs, 
 3. **Add daily support:** voice input/output, medicine tracking, user-confirmed schedules, local reminders, and sourced medicine lookups.
 4. **Make records portable:** reviewed de-identified exports, encrypted backup/restore, and caregiver/profile flows.
 5. **Expand after evaluation:** broader document formats, longitudinal comparisons, wake-word integrations, and separately validated clinical image capabilities.
+6. **Develop Ayumitra edge models:** begin the POC with existing Gemma 4 and EmbeddingGemma 2 weights. After the core flow and device benchmarks are established, develop our own fine-tuned models for on-device organization, extraction, tool use, and grounded summaries; evaluate edge memory, latency, numerical fidelity, citations, and failure behavior before replacing the baseline. Fine-tuning is a future development milestone, not a requirement to start the app or a cloud inference fallback. Private user records are not training data by default.
 
 The feasibility result should record model storage, peak memory, import time, answer latency, thermal behavior, extraction accuracy, retrieval recall, and unsupported summary claims on a fixed synthetic evaluation set. Declare target thresholds and devices before selecting the framework. Frameworks and libraries proposed in IDEA.md remain candidates until their mobile integration has been verified; its suggested week estimates are not delivery commitments.
 

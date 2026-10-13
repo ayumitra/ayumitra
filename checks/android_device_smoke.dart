@@ -2,12 +2,9 @@
 // Debug builds only. Uses the production AppController with LocalIntelligence
 // and LocalEmbeddings (no emulator bridge, no loopback, no microphone).
 //
-// Model files are staged by hand (Main owns download/staging) at:
-//   <app support files>/ayumitra-models/gemma-4-E2B-it.litertlm
-//   <app support files>/ayumitra-models/embeddinggemma-2-text-270m.litertlm
-// The harness installs them through the real production setup
-// (NativePickedFile + AppController.installModel). There is no downloader
-// in the app and this file downloads nothing.
+// Fixed public weights are prepared by production automatic setup. Android
+// DownloadManager owns downloads; verified private caches are reused. Inference
+// is the real on-device LocalIntelligence + native EmbeddingGemma 2 engine.
 //
 // Safe run order, all synthetic. Each mode is baked into its own APK (the
 // install step never retries with an uninstall: any install failure aborts
@@ -36,14 +33,17 @@ import 'package:ayumitra/app_controller.dart';
 import 'package:ayumitra/domain/records.dart';
 import 'package:ayumitra/services/local_embeddings.dart';
 import 'package:ayumitra/services/local_file_picker.dart';
+import 'package:ayumitra/services/automatic_models.dart';
 import 'package:ayumitra/services/local_intelligence.dart';
 import 'package:ayumitra/services/notice_registry.dart';
+import 'package:ayumitra/services/web_search.dart';
 import 'package:ayumitra/ui/app.dart';
 
 const _marker = 'AYUMITRA_SYNTHETIC_DEVICE_CORE_V1';
 const _restoreOnly = bool.fromEnvironment('AYUMITRA_DEVICE_RESTORE');
 const _resume = bool.fromEnvironment('AYUMITRA_DEVICE_RESUME');
 const _deletion = bool.fromEnvironment('AYUMITRA_DEVICE_DELETION');
+const _web = bool.fromEnvironment('AYUMITRA_DEVICE_WEB');
 const _question =
     'What is the hemoglobin value on March 14, 2026? Answer in one sentence with its unit and a source reference.';
 const _update = 'My hemoglobin is 13 g/dL.';
@@ -146,63 +146,97 @@ int _checkReportCore(Report report) {
   return dim;
 }
 
+/// Calls the production native generator, recording structure/timing metadata
+/// only. No output, prompt, transcript or medical data enters diagnostics.
+class _DeviceIntelligence extends LocalIntelligence {
+  @override
+  Future<String> generate(String instruction, String input) async {
+    final role = instruction.startsWith(organizerPrompt)
+        ? 'organizer'
+        : instruction.startsWith(extractorPrompt)
+        ? 'extractor'
+        : instruction.startsWith(summaryPrompt)
+        ? 'summary'
+        : 'assistant';
+    final timer = Stopwatch()..start();
+    try {
+      final result = await super.generate(instruction, input);
+      final raw = result.trim();
+      final shape = raw.isEmpty
+          ? 'empty'
+          : raw.startsWith('```')
+          ? 'fenced'
+          : raw.startsWith('{')
+          ? 'object'
+          : 'text';
+      debugPrint(
+        'AYUMITRA_DEVICE GENERATE role=$role shape=$shape ms=${timer.elapsedMilliseconds}',
+      );
+      return result;
+    } catch (error) {
+      debugPrint(
+        'AYUMITRA_DEVICE GENERATE_FAILED role=$role type=${error.runtimeType} backend=${activeBackend ?? 'none'}',
+      );
+      rethrow;
+    }
+  }
+}
+
+class _DeviceWebSearch extends WebSearch {
+  int calls = 0;
+  @override
+  Future<List<WebSource>> search(String query) async {
+    calls++;
+    debugPrint('AYUMITRA_DEVICE WEB_CALL $calls');
+    return super.search(query);
+  }
+}
+
+class _DeviceController extends AppController {
+  _DeviceController()
+    : super(intelligence: _DeviceIntelligence(), webSearch: _DeviceWebSearch());
+  @override
+  bool get automaticModelsSupported => true;
+}
+
 Future<void> _installModels(AppController c) async {
-  // Exact runtime types: the fields are statically typed, so `is` would be
-  // flagged, and an exact check also rejects a Web subclass false PASS.
   _require(
-    c.intelligence.runtimeType == LocalIntelligence,
-    'exact LocalIntelligence core (no subclass)',
+    c.intelligence.runtimeType == _DeviceIntelligence,
+    'instrumented production native intelligence (no host bridge)',
   );
   _require(
     c.embeddings.runtimeType == LocalEmbeddings,
     'exact LocalEmbeddings core (no subclass)',
   );
-  final external = await getApplicationSupportDirectory();
-
-  final dir = '${external.path}/ayumitra-models';
-  if (!c.intelligence.available) {
-    final assistant = File('$dir/gemma-4-E2B-it.litertlm');
-    _require(await assistant.exists(), 'assistant model staged on device');
-    final install = Stopwatch()..start();
-    await c.installModel(
-      NativePickedFile(assistant.path),
-      embedding: false,
-      family: 'gemma4',
-    );
-    install.stop();
-    _require(c.intelligence.available, 'assistant model installed');
-    debugPrint(
-      'AYUMITRA_DEVICE INSTALL_MS assistant=${install.elapsedMilliseconds}',
-    );
-  } else {
-    debugPrint('AYUMITRA_DEVICE INSTALL_MS assistant=skipped');
-  }
-  if (!c.embeddings.available) {
-    final embedding = File('$dir/embeddinggemma-2-text-270m.litertlm');
-    _require(await embedding.exists(), 'embedding model staged on device');
-    final install = Stopwatch()..start();
-    await c.installModel(NativePickedFile(embedding.path), embedding: true);
-    install.stop();
-    _require(c.embeddings.available, 'embedding model installed');
-    debugPrint(
-      'AYUMITRA_DEVICE INSTALL_MS embedding=${install.elapsedMilliseconds}',
-    );
-  } else {
-    debugPrint('AYUMITRA_DEVICE INSTALL_MS embedding=skipped');
-  }
+  final timer = Stopwatch()..start();
+  await c.ensureAutomaticModels();
+  _require(
+    c.modelSetupProgress?.state == 'ready',
+    'automatic fixed model pair ready',
+  );
+  _require(
+    c.intelligence.available && c.embeddings.available,
+    'automatic native models configured',
+  );
+  final support = await getApplicationSupportDirectory();
   _require(
     c.data.modelType == 'gemma4' &&
-        c.data.modelPath?.endsWith(
-              '/181938105e0eefd105961417e8da75903eacda102c4fce9ce90f50b97139a63c.litertlm',
-            ) ==
-            true,
-    'assistant artifact fingerprint verified',
+        c.data.modelPath ==
+            '${support.path}/ayumitra-models/${DefaultModel.assistant.filename}',
+    'assistant verified private artifact selected',
   );
   _require(
-    c.data.embeddingVersion ==
-        '2d079ee2f6f066b1f368e8d7c819f55214eaef1d0513b312321901f30ab286fb',
+    c.data.embeddingVersion == DefaultModel.embedding.sha256,
     'embedding artifact fingerprint verified',
   );
+  debugPrint('AYUMITRA_DEVICE AUTOMATIC_SETUP_MS ${timer.elapsedMilliseconds}');
+  // A real independent EG2 call separates embedding runtime from generation.
+  final vector = await c.embeddings.embed('Synthetic local search fixture');
+  _require(
+    vector.isNotEmpty && vector.every((v) => v.isFinite),
+    'independent native EG2 query finite',
+  );
+  debugPrint('AYUMITRA_DEVICE QUERY_VECTOR_DIM ${vector.length}');
 }
 
 Future<void> _setupTask(AppController c) async {
@@ -454,7 +488,41 @@ Future<void> _exercise(AppController c) async {
   _require(c.loaded, 'Android encrypted vault opened');
   _require(c.intelligence.available, 'installed local Gemma 4 verified');
   _require(c.embeddings.available, 'installed local EmbeddingGemma 2 verified');
-  // No public searches in this synthetic core check.
+  if (_web) {
+    _stage('web-search');
+    _require(c.webSearch.available, 'Brave API key configured on device');
+    await c.newConversation();
+    await c.ask(
+      "What is the name of Apple's folding iPhone? Check current public web sources and include a source reference. Do not rely on model memory.",
+    );
+    final answer = c.messages.last;
+    _require(
+      (c.webSearch as _DeviceWebSearch).calls > 0,
+      'actual public search HTTP tool called',
+    );
+    _require(
+      !answer.isUser && answer.web.isNotEmpty,
+      'web sources retained with answer',
+    );
+    _require(
+      answer.text.toLowerCase().contains('iphone duo'),
+      'current folding phone name found',
+    );
+    _require(
+      answer.web.any((s) => answer.text.contains('[${s.id}]')),
+      'answer cites fetched web evidence',
+    );
+    _require(
+      answer.web.every(
+        (s) =>
+            s.retrievedAt.difference(DateTime.now().toUtc()).abs() <
+            const Duration(minutes: 5),
+      ),
+      'fresh source retrieval dates',
+    );
+    return;
+  }
+  // No public searches in the medical fixture check.
   c.webSearch.apiKey = null;
   if (_deletion) {
     await _deletionTask(c);
@@ -485,7 +553,7 @@ Future<void> main() async {
   registerAyumitraNotices();
   FlutterError.onError = (d) =>
       debugPrint('AYUMITRA_DEVICE UI_ERROR ${d.exception.runtimeType}');
-  final c = AppController();
+  final c = _DeviceController();
   runApp(AyumitraApp(controller: c));
   var stage = 'initialize';
   try {
@@ -494,7 +562,7 @@ Future<void> main() async {
     // Model installation reindexes the active profile. Select only our
     // synthetic owner before setup so unrelated profiles are never reindexed.
     final owner = _ownedProfileId(c);
-    if (_restoreOnly || _resume || _deletion) {
+    if (_restoreOnly || _resume || _deletion || _web) {
       _require(
         owner != null,
         'own synthetic profile present for selected mode',
@@ -523,6 +591,9 @@ Future<void> main() async {
     debugPrint('AYUMITRA_DEVICE FAILED stage=$stage type=${error.runtimeType}');
     if (error is _DeviceCheckFailure) {
       debugPrint('AYUMITRA_DEVICE CHECK ${error.check}');
+      debugPrint(
+        'AYUMITRA_DEVICE LAST_STEP ${c.activity.isNotEmpty ? c.activity : c.stepLog.lastOrNull ?? 'none'}',
+      );
     }
   }
 }

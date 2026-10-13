@@ -13,6 +13,7 @@ class MainActivity : FlutterActivity() {
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         LocalEmbeddingBridge.register(flutterEngine, this)
+        LocalModelSetupBridge.register(flutterEngine, this)
         LocalVoiceBridge.register(flutterEngine, this)
     }
     override fun onRequestPermissionsResult(

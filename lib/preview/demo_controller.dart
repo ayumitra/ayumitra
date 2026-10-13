@@ -7,7 +7,6 @@ import 'package:file_picker/file_picker.dart';
 import '../app_controller.dart';
 import '../domain/agent_plan.dart';
 import '../domain/citation_aliases.dart';
-import '../domain/clinical_date.dart';
 import '../domain/conversations.dart';
 import '../domain/extraction.dart';
 import '../domain/records.dart';
@@ -18,6 +17,7 @@ import '../services/web_search.dart';
 import '../services/web_parser.dart';
 import '../services/validated_planner.dart';
 import '../services/validated_answer.dart';
+import '../services/validated_report_structure.dart';
 
 /// An in-memory replica of the production companion for desktop testing.
 ///
@@ -522,50 +522,16 @@ class DemoController extends AppController {
       next = next.copy(lines: aligned.lines, facts: aligned.corrections);
       if (intelligence.available) {
         announceStep('Organizing the report by date and category…');
-        final organized =
-            jsonDecode(
-                  await intelligence.generate(
-                    organizerPrompt,
-                    jsonEncode({
-                      'sourceLines': lines
-                          .take(24)
-                          .map((x) => x.toJson())
-                          .toList(),
-                    }),
-                  ),
-                )
-                as Map;
-        const categories = {
-          'lab',
-          'prescription',
-          'radiology',
-          'discharge',
-          'vaccination',
-          'growth',
-          'note',
-          'other',
-        };
-        DateTime? event;
-        if (organized['eventDate'] is String &&
-            organized['dateEvidence'] is String) {
-          final source = lines
-              .where((l) => l.id == organized['dateSourceLineId'])
-              .firstOrNull;
-          if (source != null) {
-            event = validateClinicalDate(
-              proposed: organized['eventDate'] as String,
-              evidence: organized['dateEvidence'] as String,
-              source: source,
-              now: DateTime.now(),
-            );
-          }
-        }
+        final organized = await generateValidatedReportOrganization(
+          intelligence: intelligence,
+          lines: lines.take(24).toList(),
+          now: DateTime.now(),
+          status: announceStep,
+        );
         next = next.copy(
-          type: categories.contains(organized['type'])
-              ? organized['type']
-              : 'other',
-          eventDate: event,
-          clearEventDate: event == null,
+          type: organized.type,
+          eventDate: organized.eventDate,
+          clearEventDate: organized.eventDate == null,
         );
         final facts = <MedicalFact>[];
         var rejected = 0;
@@ -574,11 +540,11 @@ class DemoController extends AppController {
             'Extracting facts (${start + 1}/${lines.length} source rows)…',
           );
           final batch = lines.skip(start).take(12).toList();
-          final output = await intelligence.generate(
-            extractorPrompt,
-            jsonEncode({'sourceLines': batch.map((x) => x.toJson()).toList()}),
+          final result = await generateValidatedReportExtraction(
+            intelligence: intelligence,
+            lines: batch,
+            status: announceStep,
           );
-          final result = validateExtraction(output, batch);
           facts.addAll(result.facts);
           rejected += result.rejected;
         }

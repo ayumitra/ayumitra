@@ -4,7 +4,7 @@ Debug-only synthetic harness for the true on-device core: the production
 `AppController` with `LocalIntelligence` and `LocalEmbeddings`. No emulator
 bridge, no host loopback, no microphone, wake-word work deferred.
 
-## Model artifacts (Main owns download/staging)
+## Fixed automatic model artifacts
 
 Official public artifacts, generic bundles:
 
@@ -13,20 +13,20 @@ Official public artifacts, generic bundles:
 | Assistant | `gemma-4-E2B-it.litertlm` ([Gemma 4 E2B model card](https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm)) | 2588147712 | `181938105e0eefd105961417e8da75903eacda102c4fce9ce90f50b97139a63c` | `b3ca0d2f076785a8f4b2219ddbd2bdb99954eae1` |
 | Embeddings | `embeddinggemma-2-text-270m.litertlm` ([EmbeddingGemma 2 Text model card](https://huggingface.co/litert-community/embeddinggemma-2-text-270m-litert-lm)) | 164626432 | `2d079ee2f6f066b1f368e8d7c819f55214eaef1d0513b312321901f30ab286fb` | `9be6e8b90982095dc05c2bd162e4b954ee4dbac7` |
 
-Stage into the debug app’s private support directory before running. If files
-were pushed to app external storage first, copy them with `adb shell run-as
-app.ayumitra.ayumitra cp` into `files/ayumitra-models/`; this avoids scoped
-external-storage visibility differences. Example target:
+Production Android setup uses DownloadManager for public model weights over Wi-Fi,
+persists OS download IDs, then verifies exact size and SHA256 off the UI thread.
+The verified private targets are:
 
-```sh
+```text
 <app support files>/ayumitra-models/gemma-4-E2B-it.litertlm
 <app support files>/ayumitra-models/embeddinggemma-2-text-270m.litertlm
 ```
 
-The harness installs staged files through the real production setup
-(`NativePickedFile` + `AppController.installModel`, fingerprint-named copy
-under `local-models`). There is no downloader in the app and the harness
-downloads nothing. Re-running skips install when models are already loaded.
+The harness calls `AppController.ensureAutomaticModels`, the same automatic
+path used at production startup. Pre-staged exact artifacts are reused after
+verification, without downloading again. No report or prompt enters the model
+setup channel. The generator wrapper records fixed role, shape, elapsed time
+and exception type only and calls the actual native runtime.
 
 ## What the harness does
 
@@ -54,7 +54,7 @@ downloads nothing. Re-running skips install when models are already loaded.
 6. Creates a second synthetic profile and requires report/memory isolation,
    then returns to the owner profile.
 7. Requires the health-bearing index to be ciphertext.
-8. Prints wall-clock `INSTALL_MS` / `IMPORT_MS` / `QUERY_MS` only. No TPS claim;
+8. Prints wall-clock `AUTOMATIC_SETUP_MS` / `IMPORT_MS` / `QUERY_MS` plus output-structure metadata only. No TPS claim;
    phone benchmarking is tracked separately.
 9. Reports the actual inference backend via `LocalIntelligence.activeBackend`,
    read after real inference ran (setup/resume query). Restore/deletion modes
@@ -106,15 +106,23 @@ after the run for manual inspection when the controller is healthy.
 
 ## Current validation checkpoint (13 October 2026)
 
-The public assistant and embedding artifacts above were downloaded and their
-SHA256 digests verified on both the Mac and S24. Both are staged in the debug
-app's private support directory. The S24 run reached assistant setup, then
-Android reported the phone dozing and the import stopped advancing. No
-on-device Gemma generation, embedding, or core-flow PASS is claimed yet.
-The unit suite has 276 passing tests, including native and browser report
-summary repair success and native capped-repair fallback. Both controllers
-keep citation validation on every attempt and never echo rejected drafts.
-Wake-word work is parked: the real S24 recognizer transcribed Ayu as are you.
+The S24 Ultra passed the real native synthetic core run on 13 October 2026.
+Automatic setup verified and reused both private model artifacts in 6.55 seconds;
+this measures cache reuse, not a first network download. An independent native
+EG2 query returned a finite 768-dimensional vector. Gemma 4 selected the GPU.
+The organizer returned fenced JSON; accepting that structure fixed the earlier
+pipeline failure. Exact fact extraction, report date/category, vector indexing,
+Markdown summary, owned citations, encrypted original and cross-profile denial
+all passed. The cited report question took about 8.48 seconds in that run.
+Current chat recall preserved the user-reported 13 g/dL and its provided date,
+while the older March 14 report query still returned 11.2 g/dL. These are
+synthetic correctness checks, not clinical accuracy or TPS measurements.
+
+The unit suite has 306 passing tests, including bounded report-structure repair,
+automatic setup protocol checks, and profile-home navigation. Both controllers
+retain evidence/citation validation and never echo rejected drafts.
+Wake-word work remains parked. Live internet search still requires a configured
+Brave Search API key; a missing key is not a successful web-search test.
 
 An additional real-model check on the Android emulator (using the explicit
 Mac localhost bridge) passed current-user recall of 13 with its provided

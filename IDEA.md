@@ -189,6 +189,7 @@ Enforce `WHERE profile_id=?` everywhere including vectors, sessions, and memorie
 - **Phase 1 — One record flow (MVP):** onboarding → import PDF/photo → vault → editable facts → search → summary with links. Offline after install.
 - **Phase 2 — Daily support:** voice I/O + foreground wake, meds + OS reminders + adherence + autonomous query-only web lookup (no tap).
 - **Phase 3 — Portable:** de-id export preview + Export-to-ChatGPT/Claude gate + encrypted backup/restore + caregiver flows.
+- **Ayumitra edge models (long term):** use existing Gemma 4 + EmbeddingGemma 2 first; develop our own fine-tuned edge models after POC/device evaluation. Optimize local report organization/extraction, tool use and grounded summaries; measure RAM, latency, exact numbers and citation quality against the baseline. Never silently collect private records for training; inference remains local.
 - **Phase 4 — Expand (after eval):** more formats, growth/trend charts, background wake integrations, gated V2 image-differential.
 
 ## 12. Acceptance for first record flow (airplane mode after install)

@@ -24,6 +24,7 @@ Future<void> launchAyumitraController(AppController controller) async {
     try {
       await pdfrxFlutterInitialize();
       await controller.initialize();
+      unawaited(controller.ensureAutomaticModels());
     } catch (_) {
       controller.initializationFailed();
     }

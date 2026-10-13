@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data' show BytesBuilder;
@@ -14,12 +15,12 @@ import 'package:uuid/uuid.dart';
 
 import 'domain/agent_plan.dart';
 import 'domain/citation_aliases.dart';
-import 'domain/clinical_date.dart';
 import 'domain/conversations.dart';
 import 'domain/extraction.dart';
 import 'domain/records.dart';
 import 'domain/retrieval.dart';
 import 'domain/second_opinion.dart';
+import 'services/automatic_models.dart';
 import 'services/local_embeddings.dart';
 import 'services/camera_cache.dart';
 import 'services/local_intelligence.dart';
@@ -29,6 +30,7 @@ import 'services/local_file_picker.dart';
 import 'services/web_search.dart';
 import 'services/validated_planner.dart';
 import 'services/validated_answer.dart';
+import 'services/validated_report_structure.dart';
 import 'storage/encrypted_vault.dart';
 
 class ChatEntry {
@@ -75,6 +77,130 @@ class AppController extends ChangeNotifier {
   bool loaded = false, busy = false;
   final messages = <ChatEntry>[];
   bool get isPreview => false;
+  bool get automaticModelsSupported =>
+      !isPreview &&
+      !kIsWeb &&
+      defaultTargetPlatform == TargetPlatform.android &&
+      intelligence.runtimeType == LocalIntelligence &&
+      embeddings.runtimeType == LocalEmbeddings;
+  ModelSetupProgress? modelSetupProgress;
+  bool modelSetupRunning = false;
+  bool _closed = false;
+  Future<void>? _modelSetupJob;
+
+  @override
+  void dispose() {
+    _closed = true;
+    super.dispose();
+  }
+
+  Future<void> ensureAutomaticModels({AutomaticModels? setup}) {
+    if (!automaticModelsSupported || !loaded || _closed) return Future.value();
+    return _modelSetupJob ??= _prepareAutomaticModels(
+      setup ?? AutomaticModels(),
+    ).whenComplete(() => _modelSetupJob = null);
+  }
+
+  Future<void> _prepareAutomaticModels(AutomaticModels setup) async {
+    modelSetupRunning = true;
+    notifyListeners();
+    DefaultModel current = DefaultModel.assistant;
+    try {
+      final support = await getApplicationSupportDirectory();
+      for (final model in [DefaultModel.assistant, DefaultModel.embedding]) {
+        current = model;
+        final verified = await setup.prepare(
+          model,
+          supportPath: support.path,
+          cancelled: () => _closed,
+          onProgress: (progress) {
+            modelSetupProgress = progress;
+            if (!_closed) notifyListeners();
+          },
+        );
+        while (busy && !_closed) {
+          await Future<void>.delayed(const Duration(milliseconds: 200));
+        }
+        if (_closed) return;
+        modelSetupProgress = ModelSetupProgress(
+          model,
+          'activating',
+          model.bytes,
+        );
+        notifyListeners();
+        await _work('Loading ${model.name} on this device…', () async {
+          // The native bridge verified the fixed artifact off the UI thread.
+          // Use that private copy directly instead of another multi-GB import.
+          if (await File(verified.path).length() != model.bytes) {
+            throw const FormatException('Local model changed during setup.');
+          }
+          if (model.role == ModelRole.assistant) {
+            if (!intelligence.available ||
+                data.modelPath != verified.path ||
+                data.modelType != 'gemma4') {
+              await intelligence.configure(verified.path, 'gemma4');
+              await _commit(
+                data.copy(modelPath: verified.path, modelType: 'gemma4'),
+              );
+            }
+          } else if (!embeddings.available ||
+              data.embeddingPath != verified.path ||
+              data.embeddingVersion != model.sha256) {
+            await embeddings.load(verified.path, model.sha256);
+            await _commit(
+              data.copy(
+                embeddingPath: verified.path,
+                embeddingVersion: model.sha256,
+              ),
+            );
+          }
+          if (model.role == ModelRole.embedding) await _reindexActiveProfile();
+        });
+        if (failure != null) throw StateError('Local model activation failed.');
+        modelSetupProgress = ModelSetupProgress(model, 'ready', model.bytes);
+      }
+    } catch (_) {
+      modelSetupProgress = ModelSetupProgress(current, 'failed', 0);
+    } finally {
+      modelSetupRunning = false;
+      if (!_closed) notifyListeners();
+    }
+  }
+
+  Future<void> _reindexActiveProfile() async {
+    for (final report in reports.where(
+      (r) => r.lines.isNotEmpty && r.embeddingVersion != embeddings.version,
+    )) {
+      final vectors = <String, List<double>>{};
+      for (final line in report.lines) {
+        vectors[line.id] = await embeddings.embed(line.text, document: true);
+      }
+      await _replace(
+        report.copy(vectors: vectors, embeddingVersion: embeddings.version),
+      );
+    }
+    for (final memory in data.memories.where(
+      (m) =>
+          m.profileId == profile?.id &&
+          m.embeddingVersion != embeddings.version,
+    )) {
+      final indexed = memory.copy(
+        vector: await embeddings.embed(memory.text, document: true),
+        embeddingVersion: embeddings.version,
+      );
+      await _commit(
+        data.copy(
+          memories: data.memories
+              .map(
+                (m) => m.id == indexed.id && m.profileId == indexed.profileId
+                    ? indexed
+                    : m,
+              )
+              .toList(),
+        ),
+      );
+    }
+  }
 
   /// A request is not a reported finding. This conservative structural gate
   /// keeps questions/tool requests out of citable user observations, while
@@ -850,51 +976,16 @@ class AppController extends ChangeNotifier {
               )
               .take(8),
         ];
-        final organized =
-            jsonDecode(
-                  await intelligence.generate(
-                    organizerPrompt,
-                    jsonEncode({
-                      'sourceLines': organizerLines
-                          .map((x) => x.toJson())
-                          .toList(),
-                    }),
-                  ),
-                )
-                as Map;
-        const categories = {
-          'lab',
-          'prescription',
-          'radiology',
-          'discharge',
-          'vaccination',
-          'growth',
-          'note',
-          'other',
-        };
-        DateTime? event;
-        if (organized['eventDate'] is String &&
-            organized['dateEvidence'] is String) {
-          final source = lines
-              .where((l) => l.id == organized['dateSourceLineId'])
-              .firstOrNull;
-          final dateText = organized['eventDate'] as String;
-          if (source != null) {
-            event = validateClinicalDate(
-              proposed: dateText,
-              evidence: organized['dateEvidence'] as String,
-              source: source,
-              now: DateTime.now(),
-            );
-          }
-        }
-
+        final organized = await generateValidatedReportOrganization(
+          intelligence: intelligence,
+          lines: organizerLines,
+          now: DateTime.now(),
+          status: announceStep,
+        );
         next = next.copy(
-          type: categories.contains(organized['type'])
-              ? organized['type']
-              : 'other',
-          eventDate: event,
-          clearEventDate: event == null,
+          type: organized.type,
+          eventDate: organized.eventDate,
+          clearEventDate: organized.eventDate == null,
         );
         final facts = <MedicalFact>[];
         var rejected = 0;
@@ -903,11 +994,11 @@ class AppController extends ChangeNotifier {
             'Extracting facts (${start + 1}/${lines.length} source rows)…',
           );
           final batch = lines.skip(start).take(12).toList();
-          final output = await intelligence.generate(
-            extractorPrompt,
-            jsonEncode({'sourceLines': batch.map((x) => x.toJson()).toList()}),
+          final result = await generateValidatedReportExtraction(
+            intelligence: intelligence,
+            lines: batch,
+            status: announceStep,
           );
-          final result = validateExtraction(output, batch);
           facts.addAll(result.facts);
           rejected += result.rejected;
         }
@@ -1154,42 +1245,7 @@ class AppController extends ChangeNotifier {
               embeddingVersion: fingerprint,
             ),
           );
-          // Reindex originals on demand. Old vectors never enter a new model's search.
-          for (final report in reports.where((r) => r.lines.isNotEmpty)) {
-            final vectors = <String, List<double>>{};
-            for (final line in report.lines) {
-              vectors[line.id] = await embeddings.embed(
-                line.text,
-                document: true,
-              );
-            }
-            await _replace(
-              report.copy(
-                vectors: vectors,
-                embeddingVersion: embeddings.version,
-              ),
-            );
-          }
-          for (final memory in data.memories.where(
-            (m) => m.profileId == profile?.id,
-          )) {
-            final indexed = memory.copy(
-              vector: await embeddings.embed(memory.text, document: true),
-              embeddingVersion: embeddings.version,
-            );
-            await _commit(
-              data.copy(
-                memories: data.memories
-                    .map(
-                      (m) =>
-                          m.id == indexed.id && m.profileId == indexed.profileId
-                          ? indexed
-                          : m,
-                    )
-                    .toList(),
-              ),
-            );
-          }
+          await _reindexActiveProfile();
         } else {
           await intelligence.configure(target.path, family);
           await _commit(data.copy(modelPath: target.path, modelType: family));

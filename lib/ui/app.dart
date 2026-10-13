@@ -15,6 +15,7 @@ import '../domain/retrieval.dart';
 import 'source_screen.dart';
 import 'profiles_screen.dart';
 import 'profile_files_screen.dart';
+import 'profile_home_screen.dart';
 import 'second_opinion_screen.dart';
 
 const ink = Color(0xff203f38);
@@ -76,7 +77,27 @@ class AyumitraApp extends StatelessWidget {
                 Expanded(child: child!),
               ],
             )
-          : child!,
+          : Column(
+              children: [
+                if (controller.automaticModelsSupported)
+                  AnimatedBuilder(
+                    animation: controller,
+                    builder: (context, _) =>
+                        controller.modelSetupProgress == null ||
+                            controller.modelSetupProgress!.state == 'ready' &&
+                                !controller.modelSetupRunning
+                        ? const SizedBox.shrink()
+                        : SafeArea(
+                            bottom: false,
+                            child: ModelSetupCard(
+                              controller: controller,
+                              compact: true,
+                            ),
+                          ),
+                  ),
+                Expanded(child: child!),
+              ],
+            ),
     ),
     home: AnimatedBuilder(
       animation: controller,
@@ -100,6 +121,46 @@ class AyumitraApp extends StatelessWidget {
       },
     ),
   );
+}
+
+class ModelSetupCard extends StatelessWidget {
+  const ModelSetupCard({
+    super.key,
+    required this.controller,
+    this.compact = false,
+  });
+  final AppController controller;
+  final bool compact;
+  @override
+  Widget build(BuildContext context) {
+    final progress = controller.modelSetupProgress;
+    return Material(
+      color: const Color(0xffe3efe8),
+      child: Padding(
+        padding: EdgeInsets.all(compact ? 10 : 20),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(progress?.label ?? 'Preparing local models…'),
+            if (controller.modelSetupRunning) ...[
+              const SizedBox(height: 8),
+              LinearProgressIndicator(value: progress?.fraction),
+              if (progress?.fraction != null)
+                Text('${(progress!.fraction! * 100).floor()}%'),
+            ],
+            if (!controller.modelSetupRunning &&
+                (progress == null || progress.state == 'failed'))
+              TextButton(
+                onPressed: controller.busy
+                    ? null
+                    : () => controller.ensureAutomaticModels(),
+                child: const Text('Retry model setup'),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
 }
 
 class PrivacyCover extends StatefulWidget {
@@ -609,6 +670,41 @@ class _CompanionScreenState extends State<CompanionScreen> with RouteAware {
     });
   }
 
+  Future<void> _openProfileHome() async {
+    if (c.busy) return;
+    _closeDrawer();
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (homeContext) => ProfileHomeScreen(
+          controller: c,
+          onOpenProfile: (id) async {
+            await c.selectProfile(id);
+            if (c.failure != null || c.activeProfileId != id) {
+              throw StateError('Profile could not be opened.');
+            }
+            if (homeContext.mounted) Navigator.of(homeContext).pop();
+          },
+          onAddProfile: () => Navigator.of(homeContext).push(
+            MaterialPageRoute(
+              builder: (_) => ProfilesScreen(
+                controller: c,
+                createOnOpen: true,
+                onViewFiles: _viewProfileFiles,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    if (!mounted) return;
+    input.clear();
+    setState(() {
+      section = 0;
+      category = null;
+      selectedAge = null;
+    });
+  }
+
   Widget _sidebar() => Material(
     type: MaterialType.transparency,
     child: SafeArea(
@@ -616,21 +712,29 @@ class _CompanionScreenState extends State<CompanionScreen> with RouteAware {
         key: const Key('companion-navigation'),
         padding: const EdgeInsets.fromLTRB(14, 20, 14, 14),
         children: [
-          const Padding(
-            padding: EdgeInsets.only(left: 10, bottom: 24),
-            child: Row(
-              children: [
-                Icon(Icons.spa_outlined, color: ink),
-                SizedBox(width: 10),
-                Text(
-                  'Ayumitra',
-                  style: TextStyle(
-                    fontSize: 22,
-                    fontWeight: FontWeight.w600,
-                    color: ink,
-                  ),
+          Padding(
+            padding: const EdgeInsets.only(bottom: 24),
+            child: InkWell(
+              key: const Key('ayumitra-home-logo'),
+              onTap: c.busy ? null : _openProfileHome,
+              borderRadius: BorderRadius.circular(12),
+              child: const Padding(
+                padding: EdgeInsets.all(10),
+                child: Row(
+                  children: [
+                    Icon(Icons.spa_outlined, color: ink),
+                    SizedBox(width: 10),
+                    Text(
+                      'Ayumitra',
+                      style: TextStyle(
+                        fontSize: 22,
+                        fontWeight: FontWeight.w600,
+                        color: ink,
+                      ),
+                    ),
+                  ],
                 ),
-              ],
+              ),
             ),
           ),
           const Padding(
@@ -870,20 +974,36 @@ class _CompanionScreenState extends State<CompanionScreen> with RouteAware {
               icon: const Icon(Icons.arrow_back),
             )
           : null,
-      title: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+      title: Row(
         children: [
-          Text(
-            section == 1
-                ? 'Report history'
-                : c.activeSession?.title ?? 'New conversation',
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
-          ),
-          Text(
-            '${c.profile!.name}’s companion',
-            style: const TextStyle(fontSize: 12),
+          if (!desktop)
+            IconButton(
+              key: const Key('ayumitra-mobile-home-logo'),
+              tooltip: 'Ayumitra home',
+              onPressed: c.busy ? null : _openProfileHome,
+              icon: const Icon(Icons.spa_outlined),
+            ),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  section == 1
+                      ? 'Report history'
+                      : c.activeSession?.title ?? 'New conversation',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                Text(
+                  '${c.profile!.name}’s companion',
+                  style: const TextStyle(fontSize: 12),
+                ),
+              ],
+            ),
           ),
         ],
       ),
@@ -1784,6 +1904,75 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   child: Text(c.failure!),
                 ),
               const SizedBox(height: 24),
+              ListTile(
+                leading: const Icon(Icons.code),
+                title: const Text('Open-source licenses'),
+                onTap: () => showLicensePage(
+                  context: context,
+                  applicationName: 'Ayumitra',
+                ),
+              ),
+            ],
+          ),
+        );
+      }
+      if (c.automaticModelsSupported) {
+        return Scaffold(
+          appBar: AppBar(title: const Text('Your companion’s setup')),
+          body: ListView(
+            padding: const EdgeInsets.all(24),
+            children: [
+              const Text(
+                'All AI runs here',
+                style: TextStyle(fontSize: 26, fontWeight: FontWeight.w600),
+              ),
+              const SizedBox(height: 12),
+              const Text(
+                'Gemma 4 answers and organizes your reports. EmbeddingGemma 2 searches your private history. Setup is automatic.',
+              ),
+              const SizedBox(height: 12),
+              const Text(
+                'The first setup downloads about 2.7 GB of model files over Wi-Fi. Downloads can continue with the screen locked. Your reports and conversations stay on this device.',
+              ),
+              const SizedBox(height: 24),
+              ModelSetupCard(controller: c),
+              ListTile(
+                leading: const Icon(Icons.smart_toy_outlined),
+                title: const Text('Gemma 4'),
+                subtitle: Text(
+                  c.intelligence.available
+                      ? 'Configured on this device'
+                      : 'Preparing automatically',
+                ),
+              ),
+              ListTile(
+                leading: const Icon(Icons.search),
+                title: const Text('EmbeddingGemma 2'),
+                subtitle: Text(
+                  c.embeddings.available
+                      ? 'Configured on this device'
+                      : 'Preparing automatically',
+                ),
+              ),
+              const SizedBox(height: 20),
+              const Text(
+                'Public web search',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
+              ),
+              const Text(
+                'The assistant can look up general information. Private health data is excluded from search queries.',
+              ),
+              TextField(
+                controller: keyInput,
+                obscureText: true,
+                decoration: const InputDecoration(
+                  labelText: 'Brave Search API key (optional)',
+                ),
+              ),
+              TextButton(
+                onPressed: c.busy ? null : () => c.setWebKey(keyInput.text),
+                child: const Text('Save search settings'),
+              ),
               ListTile(
                 leading: const Icon(Icons.code),
                 title: const Text('Open-source licenses'),
