@@ -173,6 +173,67 @@ void main() {
       });
     },
   );
+  test('aa-yuh-mit-ra pronunciation spellings retain the exact command', () {
+    scenario((time, native, voice, commands) {
+      startWake(time, voice);
+      for (final prefix in [
+        'Hey Ayumitra',
+        'Hey Ayu Mitra',
+        'Hey Aayu Mitra',
+        'Hey Ayuh Mitra',
+        'Hey Ah Yuh Mitra',
+        'Hey Ah Yu Mitra',
+        'Hey Ah Yoo Mitra',
+        'Hey Ayu-Mitra',
+        'Hey Ayu–Mitra',
+        'Hey Aa Yuh Mit Ra',
+        'Hey aa-yuh-mit-ra',
+      ]) {
+        final command = 'Save $prefix test: Hb 13.5 on 2026-03-14';
+        native.emit('final', text: '$prefix, $command');
+        nextRun(time);
+        expect(commands.last, command);
+      }
+      expect(commands, hasLength(11));
+    });
+  });
+  test(
+    'nearby names, generic hey-you and nonleading phrases do not activate',
+    () {
+      scenario((time, native, voice, commands) {
+        startWake(time, voice);
+        for (final text in [
+          'Hey you show reports',
+          'Hey Ayu show reports',
+          'Hey Mitra show reports',
+          'Hey Ayu Mitral valve',
+          'Hey Ayu Mitraville show reports',
+          'Hey Aayu Mitras show reports',
+          'Someone said Hey Ah Yuh Mitra',
+        ]) {
+          native.emit('final', text: text);
+          nextRun(time);
+        }
+        expect(commands, isEmpty);
+        expect(voice.wakeArmed, isFalse);
+      });
+    },
+  );
+  test('pronunciation-spaced wake alone arms only one subsequent command', () {
+    scenario((time, native, voice, commands) {
+      startWake(time, voice);
+      native.emit('final', text: 'Hey Ah Yuh Mitra!');
+      nextRun(time);
+      expect(voice.wakeArmed, isTrue);
+      native.emit('final', text: 'Show my records');
+      nextRun(time);
+      expect(commands, ['Show my records']);
+      expect(voice.wakeArmed, isFalse);
+      native.emit('final', text: 'Unaddressed speech');
+      nextRun(time);
+      expect(commands, ['Show my records']);
+    });
+  });
   test('wake-only phrase arms one command and expires after 30 seconds', () {
     scenario((time, native, voice, commands) {
       startWake(time, voice);

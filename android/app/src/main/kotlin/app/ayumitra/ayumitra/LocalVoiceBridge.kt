@@ -26,7 +26,7 @@ import java.util.Locale
  *
  * Channels:
  * - MethodChannel `app.ayumitra/voice`: `capabilities -> Map`,
- *   `requestPermission -> Bool`, `start {sessionId: int} -> void`,
+ *   `requestPermission -> Bool`, `start {sessionId: 64-bit int} -> void`,
  *   `stop -> void`. Every partial/final/error/stopped event echoes the
  *   starting call's `sessionId` (captured per session, never re-read from
  *   mutable state when a queued callback runs); invalid `start` args fail
@@ -40,7 +40,10 @@ import java.util.Locale
  *   only. `createSpeechRecognizer` is never used: no network recognizer,
  *   no network audio, no model download.
  * - en-US with `EXTRA_PREFER_OFFLINE`; API 33+ additionally preflights
- *   installed on-device English via `checkRecognitionSupport`.
+ *   installed on-device English via `checkRecognitionSupport` and starts
+ *   listening with an actually installed English locale (device-default
+ *   English if installed, else en-US, else another installed English
+ *   locale) — never an assumed en-US. Below API 33 the en-US default stands.
  * - Microphone is requested only from `requestPermission`, which Dart calls
  *   after an explicit user start/wake toggle. Never auto-prompted on `start`.
  * - No background service, no audio files, no transcript logs: lifecycle and
@@ -64,7 +67,9 @@ object LocalVoiceBridge {
     private var pendingPermissionResult: MethodChannel.Result? = null
     private var generation = 0
     private var sessionActive = false
-    private var activeSessionId: Int? = null
+    // 64-bit end to end: Dart session ids are microsecondsSinceEpoch and
+    // exceed Int range. Independent generation guards stay Int.
+    private var activeSessionId: Long? = null
     private val mainHandler = Handler(Looper.getMainLooper())
 
     fun register(flutterEngine: FlutterEngine, activity: Activity) {
@@ -196,16 +201,17 @@ object LocalVoiceBridge {
         activity.requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), MIC_REQUEST_CODE)
     }
 
-    private fun sessionArg(call: MethodCall): Int? {
-        // StandardMessageCodec may decode a Dart int as Int or Long.
+    private fun sessionArg(call: MethodCall): Long? {
+        // StandardMessageCodec may decode a Dart int as Int or Long; Dart
+        // session ids need the full 64-bit range either way.
         return when (val raw = call.argument<Any>("sessionId")) {
-            is Int -> raw
-            is Long -> if (raw in Int.MIN_VALUE..Int.MAX_VALUE) raw.toInt() else null
+            is Long -> raw
+            is Int -> raw.toLong()
             else -> null
         }
     }
 
-    private fun startSession(sessionId: Int) {
+    private fun startSession(sessionId: Long) {
         val context = appContext
         if (Build.VERSION.SDK_INT < 31 || context == null) {
             emit(
@@ -271,7 +277,8 @@ object LocalVoiceBridge {
         if (Build.VERSION.SDK_INT >= 33) {
             preflightEnglish(current, myGeneration)
         } else {
-            beginListening(current, myGeneration)
+            // No support query below API 33: the en-US default stands.
+            beginListening(current, myGeneration, LANGUAGE)
         }
     }
 
@@ -284,13 +291,28 @@ object LocalVoiceBridge {
         }
     }
 
-    private fun listenIntent(): Intent =
+    private fun listenIntent(locale: String = LANGUAGE): Intent =
         Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE, LANGUAGE)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, locale)
             putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
             putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+            if (Build.VERSION.SDK_INT >= 33) {
+                // API 33 on-device biasing: exact wake phrases only,
+                // pronounced aa-yuh-mit-ra. Not broadened, no cloud involved.
+                putStringArrayListExtra(
+                    RecognizerIntent.EXTRA_BIASING_STRINGS,
+                    arrayListOf(
+                        "Hey Ayumitra",
+                        "Hey Ayu Mitra",
+                        "Ayumitra",
+                        "Ayu Mitra",
+                        "Hey Aayu Mitra",
+                        "Hey Ayuh Mitra",
+                    ),
+                )
+            }
         }
 
     private fun preflightEnglish(current: SpeechRecognizer, myGeneration: Int) {
@@ -305,18 +327,23 @@ object LocalVoiceBridge {
                 context.mainExecutor,
                 object : RecognitionSupportCallback {
                     override fun onSupportResult(support: RecognitionSupport) {
+                        // Drop a late callback before touching selection state.
+                        if (myGeneration != generation || !sessionActive) {
+                            destroyRecognizer(current)
+                            return
+                        }
                         val installed = try {
                             support.installedOnDeviceLanguages
                         } catch (e: Exception) {
                             Log.e(TAG, "support languages: ${e.javaClass.simpleName}")
                             null
                         }
-                        val english = installed?.any { language ->
-                            language.equals(LANGUAGE, ignoreCase = true) ||
-                                language.equals("en_US", ignoreCase = true) ||
-                                language.lowercase(Locale.US).startsWith("en")
-                        } ?: false
-                        if (!english) {
+                        // Start the locale that is actually installed — accepting
+                        // en-IN/en-GB here while starting an uninstalled en-US
+                        // would fail the listen. Below API 33 there is no
+                        // support query, so the en-US default stands.
+                        val locale = selectInstalledEnglish(installed)
+                        if (locale == null) {
                             failSession(
                                 myGeneration,
                                 "LANGUAGE_UNAVAILABLE",
@@ -324,7 +351,7 @@ object LocalVoiceBridge {
                             )
                             return
                         }
-                        beginListening(current, myGeneration)
+                        beginListening(current, myGeneration, locale)
                     }
 
                     override fun onError(error: Int) {
@@ -347,13 +374,51 @@ object LocalVoiceBridge {
         }
     }
 
-    private fun beginListening(current: SpeechRecognizer, myGeneration: Int) {
+    /// Picks the locale to actually start listening with: device-default
+    /// English when installed, else en-US, else another installed English
+    /// locale. Exact English only ("en" or "en-<REGION>" after underscore to
+    /// BCP 47 hyphen normalization) — a bare startsWith("en") would also
+    /// match non-English tags, so it is never used here. Null when nothing
+    /// installed is English; the caller then fails closed.
+    private fun selectInstalledEnglish(installed: List<String>?): String? {
+        if (installed.isNullOrEmpty()) return null
+        fun englishTag(tag: String): String? {
+            val normalized = tag.replace('_', '-')
+            if (normalized.equals("en", ignoreCase = true)) return normalized
+            if (normalized.length > 3 &&
+                normalized.substring(0, 3).equals("en-", ignoreCase = true)
+            ) {
+                return normalized
+            }
+            return null
+        }
+        val englishInstalled = installed.mapNotNull { englishTag(it) }
+        if (englishInstalled.isEmpty()) return null
+        val deviceTag = englishTag(Locale.getDefault().toLanguageTag())
+        if (deviceTag != null) {
+            val deviceInstalled = englishInstalled.firstOrNull {
+                it.equals(deviceTag, ignoreCase = true)
+            }
+            if (deviceInstalled != null) return deviceInstalled
+        }
+        val usInstalled = englishInstalled.firstOrNull {
+            it.equals("en-US", ignoreCase = true)
+        }
+        if (usInstalled != null) return usInstalled
+        return englishInstalled.first()
+    }
+
+    private fun beginListening(
+        current: SpeechRecognizer,
+        myGeneration: Int,
+        locale: String,
+    ) {
         if (myGeneration != generation || !sessionActive) {
             destroyRecognizer(current)
             return
         }
         try {
-            current.startListening(listenIntent())
+            current.startListening(listenIntent(locale))
         } catch (e: Exception) {
             Log.e(TAG, "startListening: ${e.javaClass.simpleName}")
             failSession(
@@ -427,7 +492,7 @@ object LocalVoiceBridge {
     // so outer state is reached through the LocalVoiceBridge qualifier. The
     // owning session id is captured at construction and echoed in every
     // event, so a stale callback can never be tagged as a newer session.
-    private class VoiceListener(private val owner: Int, private val session: Int) :
+    private class VoiceListener(private val owner: Int, private val session: Long) :
         RecognitionListener {
         override fun onReadyForSpeech(params: Bundle?) = Unit
         override fun onBeginningOfSpeech() = Unit

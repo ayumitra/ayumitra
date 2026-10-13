@@ -84,3 +84,24 @@ The check uses synthetic hemoglobin 13 g/dL, verifies conversation provenance
 and its provided date, and preserves the original March report's 11.2 g/dL.
 It checks voice capability without requesting microphone access; this does
 not prove microphone transcription or wake activation on a physical phone.
+
+## Updating without discarding emulator data
+
+The Flutter install retry can uninstall an existing app after a low-storage
+failure. Use an explicit update that stops on failure instead:
+
+```sh
+flutter build apk --debug --target-platform android-arm64 --target lib/main_emulator.dart
+adb -s emulator-5554 install -r build/app/outputs/flutter-apk/app-debug.apk
+```
+
+After a successful install, preserve Flutter's checksum metadata and launch
+the already-installed binary without a redundant update:
+
+```sh
+adb -s emulator-5554 push build/app/outputs/flutter-apk/app-debug.apk.sha1 /data/local/tmp/sky.app.ayumitra.ayumitra.sha1
+flutter run -d emulator-5554 -t lib/main_emulator.dart --use-application-binary build/app/outputs/flutter-apk/app-debug.apk
+```
+
+If the explicit install fails, fix storage before proceeding; do not uninstall
+an app containing saved profiles.

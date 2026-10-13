@@ -244,7 +244,9 @@ class LocalVoice extends ChangeNotifier with WidgetsBindingObserver {
         _dispatch(text);
       } else if (mode == VoiceMode.foregroundWake) {
         final wake = RegExp(
-          r'^hey\s+ayu\s*mitra\b',
+          // Narrow spelling variants of aa-yuh-mit-ra, including ASR word
+          // boundaries. Require the complete name after a leading Hey.
+          r'^hey\s+(?:a{1,2}yuh?|(?:aa|ah)[\s–—-]+(?:yuh?|yoo))[\s–—-]*mit[\s–—-]*ra\b',
           caseSensitive: false,
         ).firstMatch(text.replaceAll(RegExp(r'[,.:;!?]'), ' '));
         if (wake != null) {
