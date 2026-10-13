@@ -141,4 +141,63 @@ void main() {
     );
     expect(model.calls, 1);
   });
+
+  test('omitted hint keeps the exact default answer repair text', () async {
+    final model = _ScriptedGenerate(['bad', 'Value was 13 [S1].']);
+    final answer = await generateValidatedAnswer(
+      generate: model.call,
+      instruction: 'answer',
+      payload: _payload(),
+      validate: (output) => output.contains('[S1]'),
+    );
+
+    expect(answer, 'Value was 13 [S1].');
+    final repair = model.inputs[1]['instruction'] as String;
+    expect(repair, contains('requiredUserObservationSourceId'));
+  });
+
+  test('repairHint replaces the default repair guidance', () async {
+    const hint = 'CUSTOM_SUMMARY_HINT_MARKER';
+    final model = _ScriptedGenerate(['bad', 'Value was 13 [S1].']);
+    final answer = await generateValidatedAnswer(
+      generate: model.call,
+      instruction: 'summarize',
+      payload: _payload(),
+      validate: (output) => output.contains('[S1]'),
+      repairHint: hint,
+    );
+
+    expect(answer, 'Value was 13 [S1].');
+    expect(model.calls, 2);
+    final first = model.inputs[0]['instruction'] as String;
+    expect(first, 'summarize');
+    final repair = model.inputs[1]['instruction'] as String;
+    expect(repair, contains(hint));
+    expect(repair.contains('requiredUserObservationSourceId'), isFalse);
+    // The repair still carries the same evidence payload plus guidance.
+    final repairPayload = model.inputs[1]['payload'] as Map<String, dynamic>;
+    expect(repairPayload.containsKey('outputRepair'), true);
+    expect(repairPayload['evidence'], _payload()['evidence']);
+  });
+
+  test(
+    'cap with hint returns null after three evidence-carrying calls',
+    () async {
+      final model = _ScriptedGenerate(['bad one', 'bad two', 'bad three']);
+      final answer = await generateValidatedAnswer(
+        generate: model.call,
+        instruction: 'summarize',
+        payload: _payload(),
+        validate: (_) => false,
+        repairHint: reportSummaryRepairHint,
+      );
+
+      expect(answer, isNull);
+      expect(model.calls, 3);
+      for (final input in model.inputs) {
+        final payload = input['payload'] as Map<String, dynamic>;
+        expect(payload['evidence'], _payload()['evidence']);
+      }
+    },
+  );
 }

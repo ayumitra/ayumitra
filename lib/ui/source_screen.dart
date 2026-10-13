@@ -6,6 +6,7 @@ import 'package:image/image.dart' as img;
 import 'package:pdfrx/pdfrx.dart';
 
 import '../app_controller.dart';
+import '../domain/camera_pages.dart';
 import '../domain/records.dart';
 
 class SourceScreen extends StatefulWidget {
@@ -25,6 +26,7 @@ class SourceScreen extends StatefulWidget {
 class _SourceScreenState extends State<SourceScreen> {
   late Future<Uint8List> original;
   Future<Uint8List>? rendered;
+  Future<List<Uint8List>>? cameraPages;
   int page = 1, pageCount = 1;
   @override
   void initState() {
@@ -34,16 +36,61 @@ class _SourceScreenState extends State<SourceScreen> {
     // A guarded route may never mount FutureBuilder. Observe errors without
     // replacing the future, so denied reads remain safely handled either way.
     original.ignore();
-    if (widget.report.extension == 'pdf') {
+    if (widget.report.extension == 'images') {
+      cameraPages = original.then(CameraPages.decode);
+      cameraPages!.ignore();
+    }
+    if (_hasPages) {
       rendered = _render(page);
       rendered!.ignore();
     }
   }
 
+  bool get _hasPages =>
+      widget.report.extension == 'pdf' || widget.report.extension == 'images';
+
+  bool _canHighlight(SourceLine line) {
+    final bounds = line.bounds;
+    final width = line.pageWidth;
+    final height = line.pageHeight;
+    return line.page == page &&
+        bounds != null &&
+        bounds.length == 4 &&
+        bounds.every((value) => value.isFinite && value >= 0) &&
+        bounds[2] > 0 &&
+        bounds[3] > 0 &&
+        width != null &&
+        width.isFinite &&
+        width > 0 &&
+        height != null &&
+        height.isFinite &&
+        height > 0;
+  }
+
+  void _showPage(int number) {
+    if (number < 1 || number > pageCount) return;
+    setState(() {
+      page = number;
+      rendered = _render(number);
+      rendered!.ignore();
+    });
+  }
+
   Future<Uint8List> _render(int number) async {
+    if (widget.report.extension == 'images') {
+      final pages = await cameraPages!;
+      pageCount = pages.length;
+      if (number < 1 || number > pageCount) {
+        throw StateError('Page unavailable.');
+      }
+      return pages[number - 1];
+    }
     final document = await PdfDocument.openData(await original);
     try {
       pageCount = document.pages.length;
+      if (number < 1 || number > pageCount) {
+        throw StateError('Page unavailable.');
+      }
       final source = document.pages[number - 1];
       final image = await source.render(
         fullWidth: source.width * 2,
@@ -134,27 +181,26 @@ class _SourceScreenState extends State<SourceScreen> {
                 child: Text('The original could not be opened locally.'),
               );
             }
-            if (!snapshot.hasData) {
+            if (!snapshot.hasData ||
+                snapshot.connectionState != ConnectionState.done) {
               return const Center(child: CircularProgressIndicator());
             }
             return Column(
               children: [
-                if (widget.report.extension == 'pdf')
+                if (_hasPages)
                   Row(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
                       IconButton(
                         tooltip: 'Previous page',
-                        onPressed: page > 1
-                            ? () => setState(() => rendered = _render(--page))
-                            : null,
+                        onPressed: page > 1 ? () => _showPage(page - 1) : null,
                         icon: const Icon(Icons.chevron_left),
                       ),
                       Text('Page $page of $pageCount'),
                       IconButton(
                         tooltip: 'Next page',
                         onPressed: page < pageCount
-                            ? () => setState(() => rendered = _render(++page))
+                            ? () => _showPage(page + 1)
                             : null,
                         icon: const Icon(Icons.chevron_right),
                       ),
@@ -187,11 +233,7 @@ class _SourceScreenState extends State<SourceScreen> {
                                           snapshot.data!,
                                           fit: BoxFit.fill,
                                         ),
-                                        if (line != null &&
-                                            line.page == page &&
-                                            line.bounds != null &&
-                                            line.pageWidth != null &&
-                                            line.pageHeight != null)
+                                        if (line != null && _canHighlight(line))
                                           Positioned(
                                             left:
                                                 line.bounds![0] /
@@ -230,7 +272,7 @@ class _SourceScreenState extends State<SourceScreen> {
                           ),
                         ),
                 ),
-                if (widget.line != null)
+                if (widget.line != null && widget.line!.page == page)
                   Padding(
                     padding: const EdgeInsets.all(20),
                     child: SelectionArea(

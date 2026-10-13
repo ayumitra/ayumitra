@@ -57,7 +57,7 @@ class _ProfileFilesScreenState extends State<ProfileFilesScreen> {
 
   String _dateLine(Report report) => report.eventDate == null
       ? 'Added ${DateFormat.yMMMd().format(report.importedAt)}'
-      : DateFormat.yMMMd().format(report.eventDate!);
+      : '${report.dateIsFallback ? 'Filed ' : ''}${DateFormat.yMMMd().format(report.eventDate!)}';
 
   @override
   Widget build(BuildContext context) => AnimatedBuilder(

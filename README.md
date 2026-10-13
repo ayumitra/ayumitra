@@ -4,17 +4,18 @@ An English-speaking medical companion for Android and iOS, built for a child and
 
 ## First development slice
 
-- Onboarding with date of birth and optional user-provided history; separate family profiles with editable details.
+- Onboarding with date of birth and optional user-provided history; separate family profiles with editable details and confirmed deletion of their records, originals, conversations, memory and pending jobs.
 - Encrypted original reports and an authenticated encrypted record/search index. A profile file library lists every stored original, including files that could not be parsed.
 - Saved conversations and user-stated memory scoped to each profile. Chat updates are available immediately and across sessions, with each message’s provided date; explicit user event dates take precedence. Deleting a conversation removes its memory without deleting reports.
-- File or rear-camera report import, with scoped temporary-copy cleanup.
+- File or rear-camera report import, with up to five photos grouped as one report, page-linked sources, owner-bound lost-camera recovery, and scoped temporary-copy cleanup.
+- Android foreground protection for local processing and a persistent, profile-scoped retry queue. Unfinished reports retry with backoff, capped at three attempts; originals remain available. Checks run while the app process is alive and resume on reopening after termination.
 - English microphone input through strictly on-device speech recognition. Experimental foreground wake listening is deferred after the S24 recognizer confused “Ayu” with “are you”; tap-to-talk remains available. Voice stops offscreen or during processing, with no cloud fallback.
-- Local PDF text extraction and a local Gemma 4 vision model for scan/photo transcription; transcripts require review.
-- Local organizer/extractor/summarizer/planner prompts using one assistant model.
-- Clinical-date/category organization, DOB-based age-at-event labels, and Markdown summaries.
+- Local PDF text extraction and a local Gemma 4 vision model for scan/photo Markdown extraction; transcripts require review.
+- Flexible Markdown extraction of report information and dates using the local assistant, with source references and no required fact-output schema. Files use a visible report date for sorting; dateless files receive a labelled current-day filing date.
+- Report-date/category organization, DOB-based age labels, and source-linked Markdown notes.
 - Source-page highlights, editable facts, and corrections retained across reprocessing. Answers retain only the files and public web sources actually cited; rejected answers clearly label retrieved excerpts as fallback evidence.
 - EmbeddingGemma 2 search through a native bridge, with local keyword search available during setup/failure.
-- A bounded planner that can combine private-record and public-web searches in one answer. Malformed tool plans get two structure-guided retries, with strict validation before any tool runs; exhausted plan repairs use local record search only. Invalid answer references also receive two controlled repair attempts before evidence fallback; updates must cite their conversation provenance.
+- A bounded planner that can combine private-record and public-web searches in one answer. Malformed tool plans get two structure-guided retries, with strict validation before any tool runs; exhausted plan repairs use local record search only. Invalid answer references and report-note references also receive two controlled repair attempts; report jobs remain retryable if notes fail, while answers use evidence fallback; updates must cite their conversation provenance.
 - Autonomous or user-requested extended thinking for bounded research: the local model plans and assesses up to three rounds/six public searches, then answers locally from collected evidence.
 - Brave Search integration with a key stored in platform secure storage; query-only requests and local result summarization.
 
@@ -59,7 +60,7 @@ complete report text.
 
 Tests cover authenticated storage, tampering, profile/session isolation and deletion, encrypted conversation restoration, user-only contextual recall, embedding identity/dimension checks, source validation, correction persistence, age/date organization, web-query filtering, and onboarding/history UI. These checks do not measure real-model medical accuracy.
 
-[Local voice setup and limits](docs/local-voice.md) · [Product brief](docs/product-brief.md) · [Evaluation plan](docs/eval-plan.md) · [Synthetic fixtures](docs/eval-fixtures/manifest.json)
+[On-device STT research](docs/research/on-device-stt.md) · [Local voice setup and limits](docs/local-voice.md) · [Product brief](docs/product-brief.md) · [Evaluation plan](docs/eval-plan.md) · [Synthetic fixtures](docs/eval-fixtures/manifest.json)
 
 ## Local browser client
 

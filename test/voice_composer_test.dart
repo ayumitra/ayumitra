@@ -84,7 +84,9 @@ void main() {
       await tester.tap(find.byTooltip('Speak to Ayumitra'));
       await tester.pump();
       expect(voice.starts, 1);
-      expect(find.text('Listening on this device…'), findsOneWidget);
+      expect(find.byTooltip('Stop microphone'), findsOneWidget);
+      expect(find.text('Ayu'), findsNothing);
+      expect(find.text('Listening on this device…'), findsNothing);
       voice.finalCommand('Hello');
       await tester.pumpAndSettle();
       expect(c.messages.first.text, 'Hello');
@@ -98,16 +100,26 @@ void main() {
   testWidgets('history navigation and person changes stop voice commands', (
     tester,
   ) async {
+    tester.view.physicalSize = const Size(390, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
     final (c, voice) = await _mount(tester);
     await tester.tap(find.byTooltip('Speak to Ayumitra'));
     await tester.pump();
-    await tester.tap(find.text('History'));
+    await tester.tap(find.byTooltip('Open navigation menu'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('history-section-switch')));
     await tester.pumpAndSettle();
     expect(voice.paused, true);
+    expect(voice.listening, false);
+    expect(find.byType(NavigationBar), findsNothing);
     voice.finalCommand('Hello');
     await tester.pumpAndSettle();
     expect(c.messages, isEmpty);
-    await tester.tap(find.text('Companion', skipOffstage: false).last);
+    await tester.tap(find.byTooltip('Open navigation menu'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('companion-section-switch')));
     await tester.pumpAndSettle();
     await tester.tap(find.byTooltip('Speak to Ayumitra'));
     await tester.pump();

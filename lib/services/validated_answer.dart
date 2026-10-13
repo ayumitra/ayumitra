@@ -1,5 +1,28 @@
 import 'dart:convert';
 
+/// Concise repair guidance for report-summary calls: citation shape, exact
+/// numbers/dates, and report grounding only. Passed as `repairHint` by the
+/// report-summary callsites; the default answer-shaped repair below stays
+/// for chat answers.
+const reportSummaryRepairHint =
+    'The previous draft was rejected. Every factual claim requires an EXACT '
+    'supplied sourceId in its own square tags, with separate tags such as '
+    '[S1] [S2] — never combined tags like [S1, S2], never unknown or invented '
+    'IDs, no JSON, and no placeholder citations. Preserve exact numbers, units, '
+    'and dates from the supplied facts only; restate only supported facts in '
+    'clean Markdown and drop any unsupported claim. Use only sourceIds supplied '
+    'in this payload.';
+
+const _answerRepairGuidance =
+    'The previous draft was rejected. '
+    'Follow citationGuide exactly. If answerRequirements names a '
+    'requiredUserObservationSourceId, your acknowledgment MUST cite '
+    'that exact tag. An older report cannot support a new user-reported '
+    'value. Use currentSessionUserContext for the latest observation '
+    'and its providedAt date. Without a matching report, ask whether '
+    'the user has one. Return concise Markdown, with each source tag '
+    'separate; no JSON or invented references.';
+
 /// Generates and strictly validates at most three natural-language answers.
 ///
 /// Repair feedback is controlled citation/structure guidance only; a rejected
@@ -8,6 +31,8 @@ import 'dart:convert';
 /// itself — only a `false` verdict is repairable. The trusted [payload] is
 /// never mutated: the first attempt encodes it as supplied, and each repair
 /// attempt encodes a fresh shallow copy with an added `outputRepair` section.
+/// An optional [repairHint] replaces the default answer-shaped repair
+/// guidance (report summaries pass [reportSummaryRepairHint]).
 /// Returns the first validated answer, or null once the cap is reached so
 /// the caller can fall back to its own local path.
 Future<String?> generateValidatedAnswer({
@@ -16,6 +41,7 @@ Future<String?> generateValidatedAnswer({
   required Map<String, dynamic> payload,
   required bool Function(String output) validate,
   void Function(String)? status,
+  String? repairHint,
 }) async {
   for (var attempt = 1; attempt <= 3; attempt++) {
     if (attempt > 1) status?.call('Repair answer format ($attempt/3)…');
@@ -36,14 +62,7 @@ Future<String?> generateValidatedAnswer({
           };
     final repairInstruction = attempt == 1
         ? instruction
-        : '$instruction\n\nOUTPUT REPAIR: The previous draft was rejected. '
-              'Follow citationGuide exactly. If answerRequirements names a '
-              'requiredUserObservationSourceId, your acknowledgment MUST cite '
-              'that exact tag. An older report cannot support a new user-reported '
-              'value. Use currentSessionUserContext for the latest observation '
-              'and its providedAt date. Without a matching report, ask whether '
-              'the user has one. Return concise Markdown, with each source tag '
-              'separate; no JSON or invented references.';
+        : '$instruction\n\nOUTPUT REPAIR: ${repairHint ?? _answerRepairGuidance}';
     final output = await generate(
       repairInstruction,
       jsonEncode(attemptPayload),

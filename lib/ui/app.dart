@@ -17,6 +17,7 @@ import 'profiles_screen.dart';
 import 'profile_files_screen.dart';
 import 'profile_home_screen.dart';
 import 'web_search_settings.dart';
+import 'camera_pages_dialog.dart';
 import 'second_opinion_screen.dart';
 
 const ink = Color(0xff203f38);
@@ -568,7 +569,9 @@ class _CompanionScreenState extends State<CompanionScreen> with RouteAware {
       ),
     );
     if (choice == 'camera') {
-      await c.capturePhoto();
+      await c.captureReportPages(
+        onAnotherPage: (count) => askForAnotherCameraPage(context, count),
+      );
     } else if (choice == 'file') {
       await c.attachReport();
     }
@@ -738,6 +741,41 @@ class _CompanionScreenState extends State<CompanionScreen> with RouteAware {
               ),
             ),
           ),
+          Padding(
+            padding: const EdgeInsets.only(left: 2, bottom: 16),
+            child: Row(
+              children: [
+                IconButton(
+                  key: const Key('companion-section-switch'),
+                  tooltip: 'Companion',
+                  onPressed: c.busy
+                      ? null
+                      : () {
+                          _setSection(0);
+                          _closeDrawer();
+                        },
+                  icon: const Icon(Icons.chat_bubble_outline),
+                  color: section == 0
+                      ? Theme.of(context).colorScheme.primary
+                      : ink,
+                ),
+                IconButton(
+                  key: const Key('history-section-switch'),
+                  tooltip: 'History',
+                  onPressed: c.busy
+                      ? null
+                      : () {
+                          _setSection(1);
+                          _closeDrawer();
+                        },
+                  icon: const Icon(Icons.history),
+                  color: section == 1
+                      ? Theme.of(context).colorScheme.primary
+                      : ink,
+                ),
+              ],
+            ),
+          ),
           const Padding(
             padding: EdgeInsets.only(left: 10, bottom: 8),
             child: Text(
@@ -874,7 +912,7 @@ class _CompanionScreenState extends State<CompanionScreen> with RouteAware {
                     overflow: TextOverflow.ellipsis,
                   ),
                   subtitle: Text(
-                    '${report.type} · ${report.eventDate == null ? 'date unknown' : DateFormat.MMMd().format(report.eventDate!)}',
+                    '${report.type} · ${report.dateIsFallback ? 'filed ' : ''}${report.eventDate == null ? 'date unknown' : DateFormat.MMMd().format(report.eventDate!)}',
                     style: const TextStyle(fontSize: 11),
                   ),
                   onTap: c.busy
@@ -896,21 +934,6 @@ class _CompanionScreenState extends State<CompanionScreen> with RouteAware {
             },
           ),
           const Divider(),
-          ListTile(
-            leading: const Icon(Icons.history),
-            title: const Text('Report history'),
-            trailing: section == 1
-                ? const Icon(Icons.arrow_back, size: 18)
-                : null,
-            selected: section == 1,
-            // Toggles: tapping again returns to the companion conversation.
-            // This is the only way home on wide screens, where the bottom
-            // navigation bar is hidden.
-            onTap: () {
-              _setSection(section == 1 ? 0 : 1);
-              _closeDrawer();
-            },
-          ),
           Padding(
             padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
             child: Text(
@@ -966,8 +989,7 @@ class _CompanionScreenState extends State<CompanionScreen> with RouteAware {
         : Drawer(backgroundColor: const Color(0xffeff2eb), child: _sidebar()),
     appBar: AppBar(
       automaticallyImplyLeading: !desktop,
-      // Wide screens hide the bottom navigation bar, so Report history
-      // needs an explicit way back to the companion conversation.
+      // The sidebar switcher also reaches the companion conversation.
       leading: section == 1 && desktop
           ? IconButton(
               tooltip: 'Back to companion',
@@ -1001,6 +1023,8 @@ class _CompanionScreenState extends State<CompanionScreen> with RouteAware {
                 ),
                 Text(
                   '${c.profile!.name}’s companion',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                   style: const TextStyle(fontSize: 12),
                 ),
               ],
@@ -1056,6 +1080,14 @@ class _CompanionScreenState extends State<CompanionScreen> with RouteAware {
           constraints: const BoxConstraints(maxWidth: 800),
           child: Column(
             children: [
+              if (c.processingNotice != null)
+                Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Text(
+                    c.processingNotice!,
+                    style: const TextStyle(fontSize: 12),
+                  ),
+                ),
               Padding(
                 padding: const EdgeInsets.symmetric(
                   horizontal: 20,
@@ -1136,22 +1168,6 @@ class _CompanionScreenState extends State<CompanionScreen> with RouteAware {
         ),
       ),
     ),
-    bottomNavigationBar: desktop
-        ? null
-        : NavigationBar(
-            selectedIndex: section,
-            onDestinationSelected: _setSection,
-            destinations: const [
-              NavigationDestination(
-                icon: Icon(Icons.chat_bubble_outline),
-                label: 'Companion',
-              ),
-              NavigationDestination(
-                icon: Icon(Icons.history),
-                label: 'History',
-              ),
-            ],
-          ),
   );
 
   Widget _conversation() {
@@ -1427,40 +1443,15 @@ class _CompanionScreenState extends State<CompanionScreen> with RouteAware {
                       visualDensity: VisualDensity.compact,
                     ),
                   ),
-                  if (!c.isPreview)
-                    Tooltip(
-                      message:
-                          'Say “Ayu” (aa-yuh) while this screen is open. On-device listening. Stops in the background; no cloud speech.',
-                      child: FilterChip(
-                        avatar: const Icon(Icons.hearing, size: 17),
-                        label: const Text(
-                          'Ayu',
-                          style: TextStyle(fontSize: 12),
-                        ),
-                        selected: voice.wakeEnabled,
-                        onSelected: c.busy
-                            ? null
-                            : (enabled) {
-                                voiceProfileId = c.activeProfileId;
-                                voiceSessionId = c.activeSessionId;
-                                unawaited(voice.setWakeEnabled(enabled));
-                              },
-                        visualDensity: VisualDensity.compact,
-                      ),
-                    ),
                 ],
               ),
             ),
           ),
-          if (voice.listening || voice.failure.isNotEmpty || voice.wakeEnabled)
+          if (voice.failure.isNotEmpty || voice.partialText.isNotEmpty)
             Padding(
               padding: const EdgeInsets.fromLTRB(12, 6, 12, 4),
               child: Text(
-                voice.failure.isNotEmpty
-                    ? voice.failure
-                    : voice.partialText.isNotEmpty
-                    ? voice.partialText
-                    : voice.status,
+                voice.failure.isNotEmpty ? voice.failure : voice.partialText,
                 style: TextStyle(
                   fontSize: 12,
                   color: voice.failure.isNotEmpty ? Colors.brown : ink,
@@ -1563,7 +1554,7 @@ class _CompanionScreenState extends State<CompanionScreen> with RouteAware {
                         subtitle: Padding(
                           padding: const EdgeInsets.only(top: 6),
                           child: Text(
-                            '${report.eventDate == null ? 'Report date unknown' : DateFormat.yMMMd().format(report.eventDate!)}\n'
+                            '${report.dateIsFallback ? 'Filed ' : ''}${report.eventDate == null ? 'Report date unknown' : DateFormat.yMMMd().format(report.eventDate!)}\n'
                             '${ageAtEvent(c.profile!, report.eventDate)} · ${report.type}\n${statusLabel(report.status)}',
                             style: const TextStyle(height: 1.6),
                           ),
@@ -2137,6 +2128,11 @@ class ReportScreen extends StatelessWidget {
           ),
         );
       }
+      final job = controller.data.processingJobs
+          .where(
+            (j) => j.reportId == report.id && j.profileId == report.profileId,
+          )
+          .firstOrNull;
       return Scaffold(
         appBar: AppBar(title: Text(report.name)),
         body: ListView(
@@ -2147,7 +2143,25 @@ class ReportScreen extends StatelessWidget {
               style: const TextStyle(color: ink),
             ),
             const SizedBox(height: 8),
+            Text(
+              report.dateIsFallback
+                  ? 'Filed ${DateFormat.yMMMd().format(report.eventDate ?? report.importedAt)} · no report date found'
+                  : 'Report date: ${DateFormat.yMMMd().format(report.eventDate ?? report.importedAt)}',
+            ),
+            const SizedBox(height: 8),
             Text(statusLabel(report.status)),
+            if (job != null && report.status != ReportStatus.processing)
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: Text(
+                  job.attempts >= 3
+                      ? 'Automatic retries paused after three attempts. You can reprocess this report.'
+                      : !controller.intelligence.available ||
+                            !controller.embeddings.available
+                      ? 'Saved and queued. Processing will resume when the local models are ready.'
+                      : 'Queued for local processing${job.attempts > 0 ? ' · automatic retry scheduled' : ''}.',
+                ),
+              ),
             if (report.notice != null)
               Padding(
                 padding: const EdgeInsets.symmetric(vertical: 16),
@@ -2186,8 +2200,8 @@ class ReportScreen extends StatelessWidget {
               const SizedBox(height: 24),
               Text(
                 controller.isPreview
-                    ? 'Local summary · review against sources'
-                    : 'AI summary · review against sources',
+                    ? 'Report notes · review against sources'
+                    : 'Report notes · review against sources',
                 style: const TextStyle(fontSize: 12, color: ink),
               ),
               const SizedBox(height: 12),
@@ -2221,17 +2235,11 @@ class ReportScreen extends StatelessWidget {
                 ),
               ),
             ],
-            const SizedBox(height: 24),
-            const Text(
-              'Extracted facts',
-              style: TextStyle(fontSize: 22, fontWeight: FontWeight.w600),
-            ),
-            if (report.facts.isEmpty)
-              const Padding(
-                padding: EdgeInsets.symmetric(vertical: 12),
-                child: Text(
-                  'Structured facts will appear after a local model reads this report.',
-                ),
+            if (report.facts.isNotEmpty) const SizedBox(height: 24),
+            if (report.facts.isNotEmpty)
+              const Text(
+                'Saved annotations',
+                style: TextStyle(fontSize: 22, fontWeight: FontWeight.w600),
               ),
             for (final fact in report.facts)
               Card(

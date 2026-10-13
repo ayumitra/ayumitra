@@ -1,6 +1,7 @@
 import 'package:ayumitra/app_controller.dart';
 import 'package:ayumitra/domain/records.dart';
 import 'package:ayumitra/ui/app.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
@@ -60,7 +61,9 @@ void main() {
       ],
     );
     await tester.pumpWidget(AyumitraApp(controller: controller));
-    await tester.tap(find.text('History'));
+    await tester.tap(find.byTooltip('Open navigation menu'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('history-section-switch')));
     await tester.pumpAndSettle();
     expect(find.text('Visible report'), findsOneWidget);
     expect(find.textContaining('Report date unknown'), findsOneWidget);

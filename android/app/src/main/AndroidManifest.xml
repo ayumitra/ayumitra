@@ -1,5 +1,13 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android" xmlns:tools="http://schemas.android.com/tools">
     <uses-permission android:name="android.permission.INTERNET"/>
+    <!-- Foreground dataSync processing for user-initiated local work only.
+         No background starts, no boot receiver. POST_NOTIFICATIONS is
+         declared but never requested. Without a grant Android shows the service
+         in Task Manager, while notification-drawer visibility is unavailable. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"/>
+    <uses-permission android:name="android.permission.WAKE_LOCK"/>
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <!-- Camera is used only when the user taps “Scan with camera”. The photo
          stays in the on-device vault. required=false keeps devices without a
          camera installable; the plugin also requests runtime permission. -->
@@ -18,6 +26,12 @@
         android:icon="@mipmap/ic_launcher">
         <!-- Native capture needs no automatic photo-picker backport download. -->
         <service android:name="com.google.android.gms.metadata.ModuleDependencies" tools:node="remove" />
+        <!-- User-initiated local processing only: dataSync foreground type,
+             never exported, never started from boot or background. -->
+        <service
+            android:name="app.ayumitra.ayumitra.LocalProcessingService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
         <activity
             android:name=".MainActivity"
             android:exported="true"

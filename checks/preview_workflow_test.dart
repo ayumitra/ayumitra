@@ -1,11 +1,13 @@
 // In-memory replica workflow tests (no sample data, no network).
 // A fake localhost model answers through the real prompts/validators, so
-// these tests cover the actual import → extract → retrieve → answer flow.
+// these tests cover the actual import → Markdown notes → retrieve → answer flow.
 
 import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:ayumitra/preview/demo_controller.dart';
+import 'package:ayumitra/domain/records.dart';
+import 'package:ayumitra/services/report_markdown.dart';
 import 'package:ayumitra/services/local_embeddings.dart';
 import 'package:ayumitra/services/local_intelligence.dart';
 import 'package:ayumitra/services/local_research.dart';
@@ -34,6 +36,14 @@ class FakeIntelligence extends LocalIntelligence {
       return '{"missingTopics":[]}';
     }
     final decoded = jsonDecode(input) as Map;
+    if (instruction == reportMarkdownPrompt ||
+        instruction.startsWith('$reportMarkdownPrompt\n\nOUTPUT REPAIR:')) {
+      final rows = decoded['sourceRows'] as List;
+      return '# Report notes\n${rows.map((row) {
+        final text = (row['text'] as String).replaceAll('[', '(').replaceAll(']', ')');
+        return '- $text [${row['sourceId']}]';
+      }).join('\n')}';
+    }
     if (summaryFn != null) return summaryFn!(decoded);
     final ids = RegExp(
       r'"sourceId":"([^"]+)"',
@@ -100,9 +110,41 @@ Future<DemoController> _ready({String? history}) async {
   return controller;
 }
 
+/// Seed a synthetic legacy/human annotation backed by the owned original row.
+/// Markdown imports intentionally do not generate structured MedicalFacts.
+Report seedSyntheticHbAnnotation(DemoController controller, Report report) {
+  if (controller.profile?.id != report.profileId) {
+    throw StateError('Only an owned synthetic report can be annotated.');
+  }
+  final line = report.lines.firstWhere((l) => l.text.contains('Hb 11.2 g/dL'));
+  final seeded = report.copy(
+    facts: [
+      MedicalFact(
+        id: '${line.id}:lab:hb',
+        kind: 'lab',
+        name: 'Hb',
+        value: '11.2',
+        unit: 'g/dL',
+        range: '12.0-16.0',
+        sourceLineId: line.id,
+        evidence: line.text,
+      ),
+    ],
+  );
+  controller.data = controller.data.copy(
+    reports: controller.data.reports
+        .map(
+          (r) =>
+              r.id == report.id && r.profileId == report.profileId ? seeded : r,
+        )
+        .toList(),
+  );
+  return seeded;
+}
+
 void main() {
   test(
-    'in-memory replica imports, extracts, and answers from own documents',
+    'in-memory replica imports Markdown notes and answers from own documents',
     () async {
       final controller = await _ready();
       addTearDown(controller.dispose);
@@ -116,7 +158,9 @@ void main() {
       expect(report.type, 'lab');
       final event = report.eventDate!;
       expect((event.year, event.month, event.day), (2026, 3, 14));
-      expect(report.facts.single.value, '11.2');
+      expect(report.facts, isEmpty);
+      expect(report.summaryMarkdown, contains('11.2 g/dL'));
+      expect(report.dateIsFallback, isFalse);
       expect(report.summaryMarkdown, contains('[${report.id}/p1-l1]'));
 
       (controller.intelligence as FakeIntelligence).plannerResponse =
@@ -164,7 +208,10 @@ void main() {
       final controller = await _ready();
       addTearDown(controller.dispose);
       await controller.importBytes('blood.txt', 'txt', _reportBytes());
-      final report = controller.reports.single;
+      final report = seedSyntheticHbAnnotation(
+        controller,
+        controller.reports.single,
+      );
       final original = await controller.original(report);
       await controller.correctFact(report, report.facts.single, '11.9');
       final changed = controller.reports.single;

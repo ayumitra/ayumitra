@@ -7,6 +7,7 @@ import 'package:http/http.dart' as http;
 import '../domain/agent_plan.dart';
 import 'local_embeddings.dart';
 import 'local_intelligence.dart';
+import 'validated_transcript.dart';
 import 'local_research.dart';
 
 /// Strict-local bridge for the in-memory web client.
@@ -299,15 +300,14 @@ Future<LocalModelInfo> _verifyModel(
 }
 
 /// Instructions that demand exact JSON (organizer, extractor, planner,
-/// research planner/assessor, transcription) get Ollama `format: 'json'`.
-/// Summaries and free conversation must stay natural language: no format.
+/// research planner/assessor) get Ollama `format: 'json'`.
+/// Report Markdown, image extraction and free conversation stay natural language: no format.
 const _jsonInstructions = {
   organizerPrompt,
   extractorPrompt,
   plannerPrompt,
   researchPlannerPrompt,
   researchAssessorPrompt,
-  transcriptionPrompt,
 };
 
 class WebIntelligence extends LocalIntelligence {
@@ -572,53 +572,39 @@ class WebIntelligence extends LocalIntelligence {
     if (bytes.length > 15 * 1024 * 1024) {
       throw const FormatException('The image exceeded the local safety limit.');
     }
-    final base = await _liveVisionBase();
+    await _liveVisionBase();
     late final List<String> lines;
     try {
-      final body = <String, dynamic>{
-        'model': _verifiedVision,
-        'system': transcriptionPrompt,
-        'prompt':
-            '$transcriptionPrompt\n\n'
-            'Transcribe the visible English text, preserving table rows.',
-        'images': [base64Encode(bytes)],
-        'stream': false,
-        'format': 'json',
-        'options': {'temperature': 0, 'num_predict': 4096, 'num_ctx': 8192},
-      };
-      if (visionInfo?.capabilities.contains('thinking') ?? false) {
-        body['think'] = false;
-      }
-      final data = await _postJson(
-        _client,
-        Uri.parse('$base/api/generate'),
-        body,
-        timeout: const Duration(minutes: 5),
-        maxBytes: 2 * 1024 * 1024,
-        what: 'Local vision transcription',
-      );
-      if (data['done'] == false || data['done_reason'] == 'length') {
-        throw const FormatException(
-          'The local transcription was cut off before finishing. Retry once the model is ready.',
+      lines = await generateValidatedTranscript((repairHint) async {
+        final liveBase = await _liveVisionBase();
+        final body = <String, dynamic>{
+          'model': _verifiedVision,
+          'system': transcriptionPrompt,
+          'prompt':
+              '$transcriptionPrompt\n\n'
+              'Extract the visible English report text as Markdown, preserving values, dates and table rows. $repairHint',
+          'images': [base64Encode(bytes)],
+          'stream': false,
+          'options': {'temperature': 0, 'num_predict': 4096, 'num_ctx': 8192},
+        };
+        if (visionInfo?.capabilities.contains('thinking') ?? false) {
+          body['think'] = false;
+        }
+        final data = await _postJson(
+          _client,
+          Uri.parse('$liveBase/api/generate'),
+          body,
+          timeout: const Duration(minutes: 5),
+          maxBytes: 2 * 1024 * 1024,
+          what: 'Local vision transcription',
         );
-      }
-      final output = ((data['response'] as String?) ?? '')
-          .trim()
-          .replaceFirst(RegExp(r'^```(?:json)?\s*'), '')
-          .replaceFirst(RegExp(r'\s*```$'), '');
-      final decoded = jsonDecode(output);
-      if (decoded is! Map || decoded['lines'] is! List) {
-        throw const FormatException('Invalid local transcript.');
-      }
-      final raw = decoded['lines'] as List;
-      if (raw.length > 300 || raw.any((l) => l is! String || l.length > 2000)) {
-        throw const FormatException('Invalid local transcript.');
-      }
-      lines = raw
-          .cast<String>()
-          .map((l) => l.trim())
-          .where((l) => l.isNotEmpty)
-          .toList();
+        if (data['done'] == false || data['done_reason'] == 'length') {
+          throw const FormatException(
+            'The local transcription was cut off before finishing. Retry once the model is ready.',
+          );
+        }
+        return (data['response'] as String?) ?? '';
+      });
     } catch (_) {
       _clearVision();
       rethrow;

@@ -1,5 +1,7 @@
 import 'dart:convert';
 
+import 'model_json.dart';
+
 /// Generation constraint for local servers that support structured output.
 /// Plans are still independently checked by [validateAgentPlan] before tools run.
 const agentPlanSchema = <String, Object>{
@@ -40,10 +42,7 @@ class AgentAction {
 /// A model cannot set profile scope, send files, choose network endpoints,
 /// or authorize sharing through these bounded read tools.
 List<AgentAction> validateAgentPlan(String text) {
-  final cleaned = text
-      .trim()
-      .replaceFirst(RegExp(r'^```(?:json)?\s*'), '')
-      .replaceFirst(RegExp(r'\s*```$'), '');
+  final cleaned = unfenceJson(text);
   final raw = jsonDecode(cleaned);
   if (raw is! Map) throw const FormatException('Invalid action plan.');
   final list = raw['actions'] ?? [raw];

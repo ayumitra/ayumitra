@@ -830,13 +830,13 @@ void main() {
         }
         if (truncated) {
           return _json(const {
-            'response': '{"lines":["par',
+            'response': 'partial row',
             'done': true,
             'done_reason': 'length',
           });
         }
         return _json(const {
-          'response': '{"lines":["row one"]}',
+          'response': 'row one',
           'done': true,
           'done_reason': 'stop',
         });
@@ -847,7 +847,7 @@ void main() {
     expect(await intelligence.transcribeBytes([1, 2, 3]), ['row one']);
     final thinkerPost = posts.lastWhere((p) => p.containsKey('images'));
     expect(thinkerPost['think'], isFalse);
-    expect(thinkerPost['format'], 'json');
+    expect(thinkerPost.containsKey('format'), isFalse);
     expect(thinkerPost['prompt'], startsWith(transcriptionPrompt));
     truncated = true;
     await expectLater(
@@ -861,7 +861,7 @@ void main() {
     expect(await intelligence.transcribeBytes([1, 2, 3]), ['row one']);
     final plainPost = posts.lastWhere((p) => p.containsKey('images'));
     expect(plainPost.containsKey('think'), isFalse);
-    expect(plainPost['format'], 'json');
+    expect(plainPost.containsKey('format'), isFalse);
   });
 }
 

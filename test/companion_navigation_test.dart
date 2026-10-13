@@ -114,19 +114,15 @@ void main() {
         await tester.pumpAndSettle();
       }
 
-      // Report history toggles away and back with an explicit control.
-      // The AppBar back uses tooltip 'Back to companion'; the sidebar
-      // history tile also shows a trailing arrow_back icon, so scope by
-      // tooltip to avoid matching both.
-      await tapSidebarTile(find.text('Report history'));
-      expect(find.byTooltip('Back to companion'), findsOneWidget);
-      await tester.tap(find.byTooltip('Back to companion'));
-      await tester.pumpAndSettle();
-      expect(find.byTooltip('Back to companion'), findsNothing);
+      // The drawer section controls keep navigation independent of labels.
+      await tapSidebarTile(find.byKey(const Key('history-section-switch')));
+      expect(find.text('Report history'), findsOneWidget);
+      await tapSidebarTile(find.byKey(const Key('companion-section-switch')));
+      expect(find.text('Report history'), findsNothing);
 
       // A FILES tile opens the report screen for this profile.
       await tapSidebarTile(find.text('scan-b.txt'));
-      expect(find.text('Extracted facts'), findsOneWidget);
+      expect(find.text('Open original'), findsOneWidget);
       await tester.tap(find.byTooltip('Back'));
       await tester.pumpAndSettle();
       expect(find.text('CONVERSATIONS'), findsOneWidget);
@@ -202,7 +198,7 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(scanFile);
     await tester.pumpAndSettle();
-    expect(find.text('Extracted facts'), findsOneWidget);
+    expect(find.text('Open original'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 

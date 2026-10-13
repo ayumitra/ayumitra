@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import '../domain/clinical_date.dart';
+import '../domain/model_json.dart';
 import '../domain/extraction.dart';
 import '../domain/records.dart';
 import 'local_intelligence.dart';
@@ -108,11 +109,7 @@ OrganizedReport _validateOrganization(
   List<SourceLine> lines,
   DateTime now,
 ) {
-  final cleaned = output
-      .trim()
-      .replaceFirst(RegExp(r'^```(?:json)?\s*'), '')
-      .replaceFirst(RegExp(r'\s*```$'), '');
-  final root = jsonDecode(cleaned);
+  final root = jsonDecode(unfenceJson(output));
   const keys = {'type', 'eventDate', 'dateEvidence', 'dateSourceLineId'};
   const categories = {
     'lab',

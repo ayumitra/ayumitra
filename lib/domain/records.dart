@@ -164,6 +164,7 @@ class Report {
     required this.digest,
     required this.importedAt,
     this.eventDate,
+    this.dateIsFallback = false,
     this.status = ReportStatus.saved,
     this.lines = const [],
     this.facts = const [],
@@ -177,6 +178,9 @@ class Report {
   final String id, profileId, name, extension, digest, type;
   final DateTime importedAt;
   final DateTime? eventDate;
+
+  /// Filing date used for sorting when the source has no usable clinical date.
+  final bool dateIsFallback;
   final ReportStatus status;
   final List<SourceLine> lines;
   final List<MedicalFact> facts;
@@ -192,6 +196,7 @@ class Report {
     String? embeddingVersion,
     String? modelVersion,
     DateTime? eventDate,
+    bool? dateIsFallback,
     String? summaryMarkdown,
     bool clearSummary = false,
     bool clearEventDate = false,
@@ -203,6 +208,7 @@ class Report {
     digest: digest,
     importedAt: importedAt,
     eventDate: clearEventDate ? null : eventDate ?? this.eventDate,
+    dateIsFallback: dateIsFallback ?? this.dateIsFallback,
     status: status ?? this.status,
     lines: lines ?? this.lines,
     facts: facts ?? this.facts,
@@ -223,6 +229,7 @@ class Report {
     'digest': digest,
     'importedAt': importedAt.toIso8601String(),
     'eventDate': eventDate?.toIso8601String(),
+    'dateIsFallback': dateIsFallback,
     'status': status.name,
     'lines': lines.map((x) => x.toJson()).toList(),
     'facts': facts.map((x) => x.toJson()).toList(),
@@ -241,6 +248,7 @@ class Report {
     digest: j['digest'],
     importedAt: DateTime.parse(j['importedAt']),
     eventDate: j['eventDate'] == null ? null : DateTime.parse(j['eventDate']),
+    dateIsFallback: j['dateIsFallback'] as bool? ?? false,
     status: ReportStatus.values.byName(j['status']),
     lines: (j['lines'] as List)
         .map((x) => SourceLine.fromJson(Json.from(x)))
@@ -344,6 +352,50 @@ class SecondOpinionAudit {
   );
 }
 
+/// A durable local-processing retry. No medical content is duplicated here.
+class ReportProcessingJob {
+  ReportProcessingJob({
+    required this.reportId,
+    required this.profileId,
+    required this.nextAttemptAt,
+    this.attempts = 0,
+  }) {
+    if (attempts < 0) {
+      throw const FormatException('Processing attempts cannot be negative.');
+    }
+  }
+  final String reportId, profileId;
+  final int attempts;
+  final DateTime nextAttemptAt;
+
+  ReportProcessingJob copy({int? attempts, DateTime? nextAttemptAt}) =>
+      ReportProcessingJob(
+        reportId: reportId,
+        profileId: profileId,
+        attempts: attempts ?? this.attempts,
+        nextAttemptAt: nextAttemptAt ?? this.nextAttemptAt,
+      );
+  Json toJson() => {
+    'reportId': reportId,
+    'profileId': profileId,
+    'attempts': attempts,
+    'nextAttemptAt': nextAttemptAt.toIso8601String(),
+  };
+  factory ReportProcessingJob.fromJson(Json json) {
+    final attempts = json['attempts'];
+    return ReportProcessingJob(
+      reportId: json['reportId'] as String,
+      profileId: json['profileId'] as String,
+      attempts: attempts == null
+          ? 0
+          : attempts is int
+          ? attempts
+          : throw const FormatException('Invalid job attempts.'),
+      nextAttemptAt: DateTime.parse(json['nextAttemptAt'] as String),
+    );
+  }
+}
+
 class VaultData {
   const VaultData({
     this.profiles = const [],
@@ -351,6 +403,8 @@ class VaultData {
     this.sessions = const [],
     this.memories = const [],
     this.exports = const [],
+    this.deletedProfileIds = const [],
+    this.processingJobs = const [],
     this.modelPath,
     this.modelType = 'gemma4',
     this.embeddingPath,
@@ -365,6 +419,9 @@ class VaultData {
   final List<ConversationMemory> memories;
   // Explicit-tap second-opinion audit log (metadata only, never pack content).
   final List<SecondOpinionAudit> exports;
+  // Durably queued original-file erasure, retried after interrupted deletion.
+  final List<String> deletedProfileIds;
+  final List<ReportProcessingJob> processingJobs;
   final String? modelPath, embeddingPath, embeddingVersion;
   final String modelType;
   final String? activeProfileId, activeSessionId;
@@ -377,6 +434,8 @@ class VaultData {
     List<ConversationSession>? sessions,
     List<ConversationMemory>? memories,
     List<SecondOpinionAudit>? exports,
+    List<String>? deletedProfileIds,
+    List<ReportProcessingJob>? processingJobs,
     String? modelPath,
     String? modelType,
     String? embeddingPath,
@@ -392,6 +451,8 @@ class VaultData {
     sessions: sessions ?? this.sessions,
     memories: memories ?? this.memories,
     exports: exports ?? this.exports,
+    deletedProfileIds: deletedProfileIds ?? this.deletedProfileIds,
+    processingJobs: processingJobs ?? this.processingJobs,
     modelPath: modelPath ?? this.modelPath,
     modelType: modelType ?? this.modelType,
     embeddingPath: embeddingPath ?? this.embeddingPath,
@@ -412,6 +473,8 @@ class VaultData {
     'sessions': sessions.map((x) => x.toJson()).toList(),
     'memories': memories.map((x) => x.toJson()).toList(),
     'exports': exports.map((x) => x.toJson()).toList(),
+    'deletedProfileIds': deletedProfileIds,
+    'processingJobs': processingJobs.map((job) => job.toJson()).toList(),
     'modelPath': modelPath,
     'modelType': modelType,
     'embeddingPath': embeddingPath,
@@ -441,6 +504,16 @@ class VaultData {
           .toList(),
       exports: (j['exports'] as List? ?? [])
           .map((x) => SecondOpinionAudit.fromJson(Json.from(x)))
+          .toList(),
+      deletedProfileIds: (j['deletedProfileIds'] as List? ?? [])
+          .map(
+            (x) => x is String
+                ? x
+                : throw const FormatException('Invalid deleted profile entry.'),
+          )
+          .toList(),
+      processingJobs: (j['processingJobs'] as List? ?? [])
+          .map((value) => ReportProcessingJob.fromJson(Json.from(value)))
           .toList(),
       modelPath: j['modelPath'],
       modelType: j['modelType'] ?? 'gemma4',

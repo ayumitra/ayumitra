@@ -13,6 +13,7 @@ import 'package:intl/intl.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:pdfrx/pdfrx.dart';
 
+import 'package:ayumitra/domain/extraction.dart';
 import 'package:ayumitra/domain/records.dart';
 import 'package:ayumitra/emulator/emulator_controller.dart';
 import 'package:ayumitra/services/local_file_picker.dart';
@@ -44,6 +45,47 @@ class _SmokeCheckFailure implements Exception {
 void _require(bool condition, String check) {
   if (!condition) throw _SmokeCheckFailure(check);
   debugPrint('AYUMITRA_SMOKE PASS $check');
+}
+
+bool _hasFixtureValue(String text) => RegExp(
+  r'(?<![\d.])11\.2(?![\d.])',
+).hasMatch(text.replaceAll(RegExp(r'[*_`]'), ''));
+
+bool _hasFixtureSource(Report report) =>
+    report.lines.any((line) => _hasFixtureValue(line.text)) &&
+    report.lines.any((line) => line.text.contains('g/dL'));
+
+bool _hasFixtureMarkdown(Report report) {
+  final markdown = report.summaryMarkdown;
+  if (markdown == null ||
+      !_hasFixtureValue(markdown) ||
+      !markdown.contains('g/dL')) {
+    return false;
+  }
+  final owned = report.lines.map((line) => '${report.id}/${line.id}').toSet();
+  return validCitations(markdown, owned) &&
+      report.lines.any(
+        (line) =>
+            _hasFixtureValue(line.text) &&
+            markdown.contains('[${report.id}/${line.id}]'),
+      ) &&
+      report.lines.any(
+        (line) =>
+            line.text.contains('g/dL') &&
+            markdown.contains('[${report.id}/${line.id}]'),
+      );
+}
+
+void _checkFixtureClinicalDate(Report report) {
+  final date = report.eventDate;
+  _require(
+    date != null &&
+        date.year == 2026 &&
+        date.month == 3 &&
+        date.day == 14 &&
+        !report.dateIsFallback,
+    'fixture clinical date 2026-03-14, not filing fallback (${report.type})',
+  );
 }
 
 Future<void> _checkOriginal(
@@ -134,7 +176,9 @@ Future<void> _exercise(EmulatorAppController c) async {
     );
     _require(
       c.reports.map((r) => r.digest).join() == originals.join() &&
-          c.reports.every((r) => r.facts.any((f) => f.value == '11.2')),
+          c.reports.every(
+            (r) => _hasFixtureSource(r) && _hasFixtureMarkdown(r),
+          ),
       'chat update preserves original dated report values',
     );
     _require(
@@ -210,13 +254,14 @@ Future<void> _exercise(EmulatorAppController c) async {
           'real EG2 vectors indexed (${report.type})',
         );
         _require(
-          report.facts.any((f) => f.value == '11.2'),
-          'real Gemma extraction validated (${report.type})',
+          _hasFixtureSource(report),
+          'owned source rows preserve exact 11.2 and g/dL (${report.type})',
         );
         _require(
-          report.summaryMarkdown?.isNotEmpty == true,
-          'real Gemma Markdown summary accepted (${report.type})',
+          _hasFixtureMarkdown(report),
+          'real Gemma Markdown carries fixture value and unit with owned citations (${report.type})',
         );
+        _checkFixtureClinicalDate(report);
         await _checkOriginal(c, report, entry.value);
         _require(!await picked.exists(), 'temporary picker plaintext removed');
       }
@@ -275,9 +320,10 @@ Future<void> _exercise(EmulatorAppController c) async {
         r.name.endsWith('.pdf') ? base64Decode(_pdf) : utf8.encode(_text),
       );
       _require(
-        r.vectors.isNotEmpty && r.summaryMarkdown?.isNotEmpty == true,
+        r.vectors.isNotEmpty && _hasFixtureSource(r) && _hasFixtureMarkdown(r),
         'indexed report and summary survive restart',
       );
+      _checkFixtureClinicalDate(r);
     }
   }
   final index = await File('${c.vault.directory.path}/index.enc').readAsBytes();
@@ -296,7 +342,7 @@ Future<void> main() async {
   registerAyumitraNotices();
   FlutterError.onError = (d) =>
       debugPrint('AYUMITRA_SMOKE UI_ERROR ${d.exception.runtimeType}');
-  final c = EmulatorAppController();
+  final c = EmulatorAppController(automaticProcessingChecks: false);
   runApp(AyumitraApp(controller: c));
   var stage = 'initialize';
   try {

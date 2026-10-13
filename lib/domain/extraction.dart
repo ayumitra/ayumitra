@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:crypto/crypto.dart';
 
 import 'records.dart';
+import 'model_json.dart';
 
 class ExtractionResult {
   const ExtractionResult(this.facts, this.rejected);
@@ -13,10 +14,7 @@ class ExtractionResult {
 /// A model's output is a proposal. Source IDs and verbatim evidence are checked
 /// before anything enters the record. This cannot establish clinical correctness.
 ExtractionResult validateExtraction(String response, List<SourceLine> lines) {
-  final cleaned = response
-      .trim()
-      .replaceFirst(RegExp(r'^```(?:json)?\s*'), '')
-      .replaceFirst(RegExp(r'\s*```$'), '');
+  final cleaned = unfenceJson(response);
   final root = jsonDecode(cleaned);
   if (root is! Map || root['facts'] is! List) {
     throw const FormatException('Expected fact proposals.');

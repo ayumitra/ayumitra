@@ -6,6 +6,7 @@ import 'dart:typed_data';
 import 'package:image/image.dart' as img;
 import 'package:pdfrx/pdfrx.dart';
 
+import '../domain/camera_pages.dart';
 import '../domain/records.dart';
 
 class LocalParser {
@@ -19,6 +20,23 @@ class LocalParser {
   }
 
   Future<List<SourceLine>> parse(Report report, Uint8List bytes) async {
+    if (report.extension == 'images') {
+      final pages = CameraPages.decode(bytes);
+      final result = <SourceLine>[];
+      for (final (index, page) in pages.indexed) {
+        // Run one image at a time to fit edge memory. Every source identifier
+        // includes its original page; an unsuccessful page fails the complete
+        // job so a partial transcript never masquerades as a complete report.
+        final lines = await _vision(page, index + 1);
+        if (lines.isEmpty) {
+          throw const FormatException(
+            'A camera report page could not be read.',
+          );
+        }
+        result.addAll(lines);
+      }
+      return result;
+    }
     if (report.extension == 'txt') {
       return utf8
           .decode(bytes)
@@ -140,7 +158,10 @@ class LocalParser {
         : image;
     final lines = await transcribe(Uint8List.fromList(img.encodePng(scaled)));
     // Model transcripts are unverified. Never invent spatial coordinates.
+    // Blank transcript rows are dropped so an empty page cannot masquerade
+    // as a successful transcription.
     return lines.indexed
+        .where((entry) => entry.$2.trim().isNotEmpty)
         .map(
           (entry) => SourceLine(
             id: 'p$page-l${entry.$1 + 1}',

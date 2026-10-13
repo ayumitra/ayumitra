@@ -6,11 +6,11 @@ import 'package:ayumitra/preview/demo_controller.dart';
 import 'package:ayumitra/domain/records.dart';
 import 'package:ayumitra/domain/retrieval.dart';
 import 'package:ayumitra/domain/conversations.dart';
-import 'package:ayumitra/services/local_intelligence.dart';
+import 'package:ayumitra/services/report_markdown.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../checks/preview_workflow_test.dart'
-    show FakeEmbeddings, FakeIntelligence;
+    show FakeEmbeddings, FakeIntelligence, seedSyntheticHbAnnotation;
 
 Uint8List _bytes() =>
     Uint8List.fromList(utf8.encode('Hb 11.2 g/dL [12.0-16.0]\n'));
@@ -56,7 +56,11 @@ class _BlockedModel extends FakeIntelligence {
   final released = Completer<void>();
   @override
   Future<String> generate(String instruction, String input) async {
-    if (instruction == organizerPrompt && !released.isCompleted) {
+    if ((instruction == reportMarkdownPrompt ||
+            instruction.startsWith(
+              '$reportMarkdownPrompt\n\nOUTPUT REPAIR:',
+            )) &&
+        !released.isCompleted) {
       if (!started.isCompleted) started.complete();
       await released.future;
     }
@@ -130,7 +134,12 @@ void main() {
       addTearDown(controller.dispose);
       final profileA = controller.profile!.id;
       await controller.importBytes('same.txt', 'txt', _bytes());
-      final reportA = controller.reports.single;
+      final reportA = seedSyntheticHbAnnotation(
+        controller,
+        controller.reports.single,
+      );
+      expect(reportA.summaryMarkdown, contains('[${reportA.id}/p1-l1]'));
+      expect(reportA.summaryMarkdown, contains('11.2 g/dL'));
       final snapshotA = reportA.toJson();
       await controller.createProfile(
         'Synthetic B',
@@ -140,7 +149,11 @@ void main() {
       );
       final profileB = controller.profile!.id;
       await controller.importBytes('same.txt', 'txt', _bytes());
-      final reportB = controller.reports.single;
+      final reportB = seedSyntheticHbAnnotation(
+        controller,
+        controller.reports.single,
+      );
+      expect(reportB.summaryMarkdown, contains('[${reportB.id}/p1-l1]'));
       expect(reportB.id, isNot(reportA.id));
       expect(controller.data.reports.length, 2);
       expect(
@@ -176,7 +189,10 @@ void main() {
       final controller = await _ready();
       addTearDown(controller.dispose);
       await controller.importBytes('original.txt', 'txt', _bytes());
-      final original = controller.reports.single;
+      final original = seedSyntheticHbAnnotation(
+        controller,
+        controller.reports.single,
+      );
       await controller.correctFact(original, original.facts.single, '11.9');
       await controller.retry(
         original,

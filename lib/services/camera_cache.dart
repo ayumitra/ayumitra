@@ -66,6 +66,9 @@ class CameraCache {
     }
   }
 
+  /// Accept only an existing owned, direct-child, regular camera cache file.
+  bool ownsPath(String path) => _scopedFile(_normalize(path)) != null;
+
   /// Single-file cleanup for finally/cancel paths. No-op (never throws) when
   /// the path is outside the root, not a direct child, not a regular file,
   /// not an owned plugin filename, or reached through a symlink.

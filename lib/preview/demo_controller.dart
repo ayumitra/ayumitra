@@ -10,6 +10,7 @@ import '../domain/citation_aliases.dart';
 import '../domain/conversations.dart';
 import '../domain/extraction.dart';
 import '../domain/records.dart';
+import '../domain/profile_deletion.dart';
 import '../domain/retrieval.dart';
 import '../services/local_intelligence.dart';
 import '../services/local_research.dart';
@@ -17,7 +18,8 @@ import '../services/web_search.dart';
 import '../services/web_parser.dart';
 import '../services/validated_planner.dart';
 import '../services/validated_answer.dart';
-import '../services/validated_report_structure.dart';
+import '../services/report_markdown.dart';
+import '../domain/report_metadata.dart';
 
 /// An in-memory replica of the production companion for desktop testing.
 ///
@@ -160,6 +162,34 @@ class DemoController extends AppController {
           .toList(),
     );
     notifyListeners();
+  }
+
+  @override
+  Future<void> deleteProfile(String id) async {
+    if (busy) return;
+    try {
+      final next = withoutProfile(
+        data.copy(
+          activeProfileId: activeProfileId,
+          activeSessionId: activeSessionId,
+          clearActiveProfile: activeProfileId == null,
+          clearActiveSession: activeSessionId == null,
+        ),
+        id,
+        queueFileDeletion: false,
+      );
+      _originals.removeWhere((key, _) => key.startsWith('$id:'));
+      data = next;
+      activeProfileId = next.activeProfileId;
+      activeSessionId = next.activeSessionId;
+      extendedThinking = false;
+      failure = null;
+      restoreConversation();
+      notifyListeners();
+    } catch (_) {
+      failure = 'This profile could not be removed. Please retry.';
+      notifyListeners();
+    }
   }
 
   @override
@@ -449,15 +479,18 @@ class DemoController extends AppController {
       failure = 'This report is already saved for ${current.name}.';
       return;
     }
+    final importedAt = DateTime.now();
     final report = Report(
       id: 'inmemory-report-${current.id}-${digest.substring(0, 24)}',
       profileId: current.id,
       name: name,
       extension: extension,
       digest: digest,
-      importedAt: DateTime.now(),
+      importedAt: importedAt,
+      eventDate: DateTime(importedAt.year, importedAt.month, importedAt.day),
+      dateIsFallback: true,
     );
-    _originals[report.id] = Uint8List.fromList(bytes);
+    _originals['${report.profileId}:${report.id}'] = Uint8List.fromList(bytes);
     _save(data.copy(reports: [...data.reports, report]));
     await _process(report);
   }
@@ -488,7 +521,7 @@ class DemoController extends AppController {
       ),
     );
     try {
-      final bytes = _originals[report.id];
+      final bytes = _originals['${report.profileId}:${report.id}'];
       if (bytes == null) throw const FormatException('Original missing.');
       announceStep('Reading the document…');
       final parsedLines = await _parseText(report, bytes);
@@ -520,42 +553,12 @@ class DemoController extends AppController {
         newLines: parsedLines,
       );
       next = next.copy(lines: aligned.lines, facts: aligned.corrections);
-      if (intelligence.available) {
-        announceStep('Organizing the report by date and category…');
-        final organized = await generateValidatedReportOrganization(
-          intelligence: intelligence,
-          lines: lines.take(24).toList(),
-          now: DateTime.now(),
-          status: announceStep,
-        );
-        next = next.copy(
-          type: organized.type,
-          eventDate: organized.eventDate,
-          clearEventDate: organized.eventDate == null,
-        );
-        final facts = <MedicalFact>[];
-        var rejected = 0;
-        for (var start = 0; start < lines.length; start += 12) {
-          announceStep(
-            'Extracting facts (${start + 1}/${lines.length} source rows)…',
-          );
-          final batch = lines.skip(start).take(12).toList();
-          final result = await generateValidatedReportExtraction(
-            intelligence: intelligence,
-            lines: batch,
-            status: announceStep,
-          );
-          facts.addAll(result.facts);
-          rejected += result.rejected;
-        }
-        next = next.copy(
-          facts: preserveCorrections(facts, aligned.corrections),
-          modelVersion: 'local:web:prompts-v1',
-          notice: rejected > 0
-              ? '$rejected unsupported proposals were excluded. Review the source.'
-              : null,
-        );
-      }
+      final discovered = discoverReportDate(lines);
+      next = next.copy(
+        eventDate: discovered.date,
+        dateIsFallback: discovered.isFallback,
+        type: discoverReportCategory(lines),
+      );
       if (embeddings.available) {
         announceStep('Building the local search index…');
         final vectors = <String, List<double>>{};
@@ -581,7 +584,7 @@ class DemoController extends AppController {
             ? 'Image text was transcribed by your local model. Check every value against the original. ${next.notice ?? ""}'
             : intelligence.available
             ? next.notice
-            : 'Text is searchable locally. Connect a local chat model in settings to extract structured facts.',
+            : 'Text is searchable locally. Connect the local assistant to prepare Markdown notes.',
       );
       _save(
         data.copy(
@@ -594,7 +597,7 @@ class DemoController extends AppController {
               .toList(),
         ),
       );
-      if (intelligence.available && next.facts.isNotEmpty) {
+      if (intelligence.available) {
         await _summarizeReport(next, owner);
       }
       await _appendTurn(
@@ -623,68 +626,37 @@ class DemoController extends AppController {
   }
 
   Future<void> _summarizeReport(Report report, Profile owner) async {
-    announceStep('Writing report summary…');
-    final sources = report.facts
-        .map(
-          (f) => {
-            'sourceId': '${report.id}/${f.sourceLineId}',
-            'sourceMethod': report.lines
-                .where((l) => l.id == f.sourceLineId)
-                .firstOrNull
-                ?.method,
-            ...f.toJson(),
-          },
-        )
-        .toList();
-    final aliases = CitationAliases.fromCanonical(
-      sources.map((x) => x['sourceId'] as String).toList(),
-    );
-    final canonical = sources.map((x) => x['sourceId'] as String).toSet();
-    final payload = {
-      'task': 'Summarize this report',
-      'category': report.type,
-      'eventDate': report.eventDate?.toIso8601String(),
-      'ageAtEvent': ageAtEvent(owner, report.eventDate),
-      'citationGuide': aliases.instruction(),
-      'facts': sources
-          .map((x) => {...x, 'sourceId': aliases.aliasFor(x['sourceId'])})
-          .toList(),
-    };
-    // Same repair contract as the native controller: at most two controlled
-    // citation/format repairs on the same payload and aliases, never echoing
-    // a rejected draft; null on cap keeps the no-summary notice path below.
-    final output = await generateValidatedAnswer(
-      generate: intelligence.generate,
-      instruction: summaryPrompt,
-      payload: payload,
+    announceStep('Writing report notes as Markdown…');
+    final output = await generateReportMarkdown(
+      intelligence,
+      report,
+      owner,
+      discovered: ReportDate(
+        date: report.eventDate ?? DateTime.now(),
+        isFallback: report.dateIsFallback,
+      ),
+      category: report.type,
+      ageAtEvent: report.dateIsFallback
+          ? null
+          : ageAtEvent(owner, report.eventDate),
       status: announceStep,
-      validate: (text) =>
-          aliases.validate(text, canonical) &&
-          validCitations(aliases.resolveText(text), canonical),
     );
-    if (output == null) {
-      _save(
-        data.copy(
-          reports: data.reports
-              .map(
-                (r) => r.id == report.id && r.profileId == report.profileId
-                    ? report.copy(
-                        notice:
-                            'Summary citations could not be validated. Review the extracted facts.',
-                      )
-                    : r,
-              )
-              .toList(),
-        ),
-      );
-      return;
-    }
     _save(
       data.copy(
         reports: data.reports
             .map(
               (r) => r.id == report.id && r.profileId == report.profileId
-                  ? report.copy(summaryMarkdown: aliases.resolveText(output))
+                  ? output == null
+                        ? report.copy(
+                            status: ReportStatus.needsReview,
+                            notice:
+                                'Report notes could not be linked to their sources. The original is saved; please retry.',
+                          )
+                        : report.copy(
+                            summaryMarkdown: output,
+                            modelVersion: 'local:web:markdown-v1',
+                            notice: report.notice,
+                          )
                   : r,
             )
             .toList(),
@@ -747,6 +719,11 @@ class DemoController extends AppController {
   Future<void> capturePhoto() => attachReport();
 
   @override
+  Future<void> captureReportPages({
+    Future<bool> Function(int)? onAnotherPage,
+  }) => attachReport();
+
+  @override
   Future<void> installModel(
     PlatformFile file, {
     required bool embedding,
@@ -777,10 +754,11 @@ class DemoController extends AppController {
   @override
   Future<Uint8List> original(Report report) async {
     final stored = _storedOwnedReport(report);
-    if (stored == null || !_originals.containsKey(stored.id)) {
+    if (stored == null ||
+        !_originals.containsKey('${stored.profileId}:${stored.id}')) {
       throw StateError('This source is not in the active profile.');
     }
-    return Uint8List.fromList(_originals[stored.id]!);
+    return Uint8List.fromList(_originals['${stored.profileId}:${stored.id}']!);
   }
 
   @override

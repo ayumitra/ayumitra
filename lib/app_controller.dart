@@ -18,10 +18,14 @@ import 'domain/citation_aliases.dart';
 import 'domain/conversations.dart';
 import 'domain/extraction.dart';
 import 'domain/records.dart';
+import 'domain/profile_deletion.dart';
+import 'domain/processing_jobs.dart';
+import 'domain/camera_pages.dart';
 import 'domain/retrieval.dart';
 import 'domain/second_opinion.dart';
 import 'services/automatic_models.dart';
 import 'services/local_embeddings.dart';
+import 'services/local_processing.dart';
 import 'services/camera_cache.dart';
 import 'services/local_intelligence.dart';
 import 'services/local_research.dart';
@@ -30,7 +34,8 @@ import 'services/local_file_picker.dart';
 import 'services/web_search.dart';
 import 'services/validated_planner.dart';
 import 'services/validated_answer.dart';
-import 'services/validated_report_structure.dart';
+import 'services/report_markdown.dart';
+import 'domain/report_metadata.dart';
 import 'storage/encrypted_vault.dart';
 
 class ChatEntry {
@@ -52,15 +57,26 @@ class AppController extends ChangeNotifier {
     LocalEmbeddings? embeddings,
     WebSearch? webSearch,
     FlutterSecureStorage? secureStorage,
+    ImagePicker? imagePicker,
+    LocalProcessing? localProcessing,
   }) : intelligence = intelligence ?? LocalIntelligence(),
        embeddings = embeddings ?? LocalEmbeddings(),
        webSearch = webSearch ?? WebSearch(),
-       _secure = secureStorage ?? const FlutterSecureStorage();
+       _secure = secureStorage ?? const FlutterSecureStorage(),
+       _imagePicker = imagePicker ?? ImagePicker(),
+       _processing = localProcessing ?? LocalProcessing();
   final LocalIntelligence intelligence;
   final LocalEmbeddings embeddings;
   final WebSearch webSearch;
   final FlutterSecureStorage _secure;
+  final ImagePicker _imagePicker;
+  static const cameraPendingKey = 'ayumitra-camera-pending-v1';
   final _uuid = const Uuid();
+  final LocalProcessing _processing;
+  Timer? _processingTimer;
+  ProcessingLease? _pendingJobLease;
+  bool _checkingJobs = false;
+  String? processingNotice;
   late EncryptedVault vault;
   late LocalParser parser;
   late PickerCache pickerCache;
@@ -93,6 +109,8 @@ class AppController extends ChangeNotifier {
   @override
   void dispose() {
     _closed = true;
+    _processingTimer?.cancel();
+    unawaited(_pendingJobLease?.close());
     super.dispose();
   }
 
@@ -165,7 +183,10 @@ class AppController extends ChangeNotifier {
       modelSetupProgress = ModelSetupProgress(current, 'failed', 0);
     } finally {
       modelSetupRunning = false;
-      if (!_closed) notifyListeners();
+      if (!_closed) {
+        notifyListeners();
+        _startProcessingChecks();
+      }
     }
   }
 
@@ -393,7 +414,6 @@ class AppController extends ChangeNotifier {
       pickerCache = await PickerCache.forDevice();
       await pickerCache.clean();
       cameraCache = await CameraCache.forDevice();
-      await cameraCache.clean();
       parser = LocalParser(
         Directory('${(await getTemporaryDirectory()).path}/ayumitra-ocr'),
         transcribe: intelligence.transcribeImage,
@@ -408,6 +428,7 @@ class AppController extends ChangeNotifier {
         ).invokeMethod('protectDirectory', {'path': modelDirectory.path});
       }
       data = await vault.read();
+      data = await vault.completeProfileDeletions(data);
       // Interrupted jobs remain retryable without losing the original.
       data = data.copy(
         reports: data.reports
@@ -421,6 +442,18 @@ class AppController extends ChangeNotifier {
             )
             .toList(),
       );
+      for (final report in data.reports) {
+        if (report.status == ReportStatus.saved ||
+            report.status == ReportStatus.processing ||
+            report.summaryMarkdown == null) {
+          data = enqueueReportJob(
+            data,
+            report.id,
+            report.profileId,
+            DateTime.now(),
+          );
+        }
+      }
       await vault.save(data);
       activeProfileId = data.profiles.any((p) => p.id == data.activeProfileId)
           ? data.activeProfileId
@@ -449,6 +482,14 @@ class AppController extends ChangeNotifier {
         }
       }
       loaded = true;
+      if (Platform.isAndroid &&
+          await _secure.read(key: cameraPendingKey) != null) {
+        await recoverCameraCapture();
+      }
+      if (await _secure.read(key: cameraPendingKey) == null) {
+        await cameraCache.clean();
+      }
+      _startProcessingChecks();
     } catch (_) {
       failure =
           'The encrypted vault could not be opened. Existing data has been kept. Restart to retry.';
@@ -474,22 +515,109 @@ class AppController extends ChangeNotifier {
     ),
   );
 
-  Future<void> _work(String label, Future<void> Function() task) async {
+  Future<void> _work(
+    String label,
+    Future<void> Function() task, {
+    bool background = false,
+  }) async {
     if (busy) return;
     busy = true;
     stepLog.clear();
     activity = label;
     failure = null;
     notifyListeners();
+    final lease = background && !isPreview ? await _processing.acquire() : null;
+    if (lease?.protected == true) processingNotice = null;
+    if (_processing.supported && background && lease?.protected != true) {
+      processingNotice =
+          'Keep Ayumitra open while this task runs. Background processing is unavailable.';
+    }
     try {
       await task();
     } catch (_) {
       failure =
           'This action could not finish locally. Your saved records have been kept; please retry.';
     } finally {
+      await lease?.close();
       busy = false;
       activity = '';
-      notifyListeners();
+      if (!_closed) notifyListeners();
+    }
+  }
+
+  /// Debug harnesses disable automatic work on unrelated stored profiles.
+  bool get automaticProcessingChecksEnabled => !isPreview && Platform.isAndroid;
+
+  void _startProcessingChecks() {
+    if (!automaticProcessingChecksEnabled || _closed) return;
+    _processingTimer ??= Timer.periodic(
+      const Duration(seconds: 15),
+      (_) => unawaited(runPendingProcessingJobs()),
+    );
+    unawaited(runPendingProcessingJobs());
+  }
+
+  Future<void> _releaseFinishedQueue() async {
+    final waiting =
+        automaticProcessingChecksEnabled &&
+        intelligence.available &&
+        embeddings.available &&
+        data.processingJobs.any(
+          (j) =>
+              j.attempts < 3 &&
+              data.profiles.any((p) => p.id == j.profileId) &&
+              data.reports.any(
+                (r) => r.id == j.reportId && r.profileId == j.profileId,
+              ),
+        );
+    if (!waiting) {
+      await _pendingJobLease?.close();
+      _pendingJobLease = null;
+    }
+  }
+
+  Future<void> runPendingProcessingJobs() async {
+    if (!loaded ||
+        busy ||
+        _closed ||
+        isPreview ||
+        _checkingJobs ||
+        !intelligence.available ||
+        !embeddings.available) {
+      return;
+    }
+    final due = pendingReportJobs(data, DateTime.now());
+    if (due.isEmpty) {
+      await _releaseFinishedQueue();
+      return;
+    }
+    _checkingJobs = true;
+    try {
+      _pendingJobLease ??= await _processing.acquire();
+      if (_processing.supported && _pendingJobLease?.protected != true) {
+        // Android can refuse a new foreground service while the app is
+        // hidden. Keep the job and its attempt budget intact until reopening.
+        await _pendingJobLease?.close();
+        _pendingJobLease = null;
+        processingNotice = 'Queued reports will resume when Ayumitra is open.';
+        if (!_closed) notifyListeners();
+        return;
+      }
+      for (final job in due) {
+        if (busy || _closed) break;
+        final report = data.reports
+            .where((r) => r.id == job.reportId && r.profileId == job.profileId)
+            .firstOrNull;
+        if (report == null) continue;
+        await _work(
+          'Retrying an unfinished report locally…',
+          () => _process(report, backgroundJob: true),
+          background: true,
+        );
+      }
+      await _releaseFinishedQueue();
+    } finally {
+      _checkingJobs = false;
     }
   }
 
@@ -649,6 +777,53 @@ class AppController extends ChangeNotifier {
       );
     }
   }
+
+  Future<void> deleteProfile(
+    String id,
+  ) => _work('Deleting the private profile…', () async {
+    final next = withoutProfile(
+      data.copy(
+        activeProfileId: activeProfileId,
+        activeSessionId: activeSessionId,
+        clearActiveProfile: activeProfileId == null,
+        clearActiveSession: activeSessionId == null,
+      ),
+      id,
+    );
+    // Commit logical erasure and its retry marker before touching file bytes.
+    await vault.save(next);
+    data = next;
+    activeProfileId = next.activeProfileId;
+    activeSessionId = next.activeSessionId;
+    restoreConversation();
+    extendedThinking = false;
+    notifyListeners();
+    final camera = await _secure.read(key: cameraPendingKey);
+    if (camera != null) {
+      try {
+        final pending = jsonDecode(camera) as Map;
+        if (pending['profileId'] == id) {
+          final path = pending['path'];
+          if (path is String) await cameraCache.remove(path);
+          if (pending['paths'] is List) {
+            for (final page in (pending['paths'] as List).whereType<String>()) {
+              await cameraCache.remove(page);
+            }
+          }
+          await _secure.delete(key: cameraPendingKey);
+        }
+      } on FormatException {
+        /* Unknown journal never selects another owner. */
+      }
+    }
+    final cleaned = await vault.completeProfileDeletions(data);
+    await _commit(cleaned);
+    await _releaseFinishedQueue();
+    if (data.deletedProfileIds.isNotEmpty) {
+      failure =
+          'The profile and its memory were removed. File cleanup will retry when the app opens.';
+    }
+  });
 
   Future<void> selectProfile(String id) => _work('Opening profile…', () async {
     if (!data.profiles.any((p) => p.id == id)) return;
@@ -853,7 +1028,7 @@ class AppController extends ChangeNotifier {
         } finally {
           await pickerCache.remove(file);
         }
-      });
+      }, background: true);
 
   Future<void> importSample(Uint8List bytes) => _work(
     'Adding a synthetic example…',
@@ -862,51 +1037,178 @@ class AppController extends ChangeNotifier {
 
   /// Photograph a report with the rear camera into the active profile's vault.
   /// On-device only: the photo follows the same encrypted import path as files.
-  Future<void> capturePhoto() => _work('Saving your photo…', () async {
-    if (profile == null) return;
-    final photo = await ImagePicker().pickImage(
-      source: ImageSource.camera,
-      preferredCameraDevice: CameraDevice.rear,
-      requestFullMetadata: false,
+  Future<void> capturePhoto() => captureReportPages();
+
+  Future<void> captureReportPages({
+    Future<bool> Function(int)? onAnotherPage,
+  }) => _work('Capturing your report pages…', () async {
+    final owner = profile;
+    if (owner == null) return;
+    final pages = <XFile>[];
+    await _secure.write(
+      key: cameraPendingKey,
+      value: jsonEncode({'profileId': owner.id, 'paths': <String>[]}),
     );
-    if (photo == null) {
+    for (var i = 0; i < CameraPages.maxPages; i++) {
+      XFile? photo;
+      try {
+        photo = await _imagePicker.pickImage(
+          source: ImageSource.camera,
+          preferredCameraDevice: CameraDevice.rear,
+          requestFullMetadata: false,
+        );
+      } on PlatformException catch (error) {
+        if (pages.isEmpty) {
+          await _secure.delete(key: cameraPendingKey);
+          failure = error.code.toLowerCase().contains('denied')
+              ? 'Camera permission is off. Enable it in device settings, or attach a file.'
+              : 'The camera could not open. Try again or attach a photo.';
+          return;
+        }
+        break; // Earlier pages are still saved if another capture fails.
+      }
+      if (photo == null) break;
+      if (!cameraCache.ownsPath(photo.path)) {
+        throw StateError('Invalid camera cache.');
+      }
+      pages.add(photo);
+      await _secure.write(
+        key: cameraPendingKey,
+        value: jsonEncode({
+          'profileId': owner.id,
+          'paths': pages.map((p) => p.path).toList(),
+        }),
+      );
+      if (pages.length == CameraPages.maxPages ||
+          onAnotherPage == null ||
+          !await onAnotherPage(pages.length)) {
+        break;
+      }
+    }
+    if (pages.isEmpty) {
+      await _secure.delete(key: cameraPendingKey);
       await cameraCache.clean();
       return;
     }
-    try {
-      if (await photo.length() > 30 * 1024 * 1024) {
-        throw const FormatException('Photo is too large.');
-      }
-      final bytes = await photo.readAsBytes();
-      if (bytes.lengthInBytes > 30 * 1024 * 1024) {
-        throw const FormatException('Photo is too large.');
-      }
-      final candidate = photo.path.split('.').last.toLowerCase();
-      final ext = RegExp(r'^[a-z0-9]{1,8}$').hasMatch(candidate)
-          ? candidate
-          : 'image';
-      final stamp = DateTime.now().toIso8601String().replaceAll(
-        RegExp(r'[:.]'),
-        '-',
-      );
-      await _importBytes(
-        'Camera report $stamp.$ext',
-        ext,
-        bytes,
-        onSaved: () => cameraCache.remove(photo.path),
-      );
-    } finally {
-      await cameraCache.remove(photo.path);
+    await _saveCameraPages(pages, owner.id);
+  }, background: true);
+
+  Future<void> _saveCameraPages(List<XFile> pages, String ownerId) async {
+    if (!data.profiles.any((p) => p.id == ownerId) ||
+        pages.isEmpty ||
+        pages.length > CameraPages.maxPages ||
+        pages.any((p) => !cameraCache.ownsPath(p.path))) {
+      throw StateError('The captured report has no valid owning profile.');
     }
-  });
+    await _secure.write(
+      key: cameraPendingKey,
+      value: jsonEncode({
+        'profileId': ownerId,
+        'paths': pages.map((p) => p.path).toList(),
+      }),
+    );
+    final images = <Uint8List>[];
+    var size = 0;
+    for (final photo in pages) {
+      final length = await photo.length();
+      size += length;
+      if (size > CameraPages.maxBytes) {
+        // Keep the journal and captures available rather than lose them.
+        failure = 'These pages exceed 30 MB. Capture fewer or smaller images.';
+        return;
+      }
+      images.add(await photo.readAsBytes());
+    }
+    final grouped = images.length > 1;
+    final bytes = grouped ? CameraPages.encode(images) : images.single;
+    final candidate = pages.first.path.split('.').last.toLowerCase();
+    final ext = grouped
+        ? 'images'
+        : RegExp(r'^[a-z0-9]{1,8}$').hasMatch(candidate)
+        ? candidate
+        : 'image';
+    final stamp = DateTime.now().toIso8601String().replaceAll(
+      RegExp(r'[:.]'),
+      '-',
+    );
+    final digest = sha256.convert(bytes).toString();
+    Future<void> clearCapture() async {
+      for (final photo in pages) {
+        await cameraCache.remove(photo.path);
+      }
+      await _secure.delete(key: cameraPendingKey);
+    }
+
+    if (data.reports.any((r) => r.profileId == ownerId && r.digest == digest)) {
+      await clearCapture();
+      failure = 'This camera report is already saved in its profile.';
+      return;
+    }
+    await _importBytes(
+      'Camera report $stamp.${grouped ? 'ayupages' : ext}',
+      ext,
+      bytes,
+      ownerProfileId: ownerId,
+      process: activeProfileId == ownerId,
+      onSaved: clearCapture,
+    );
+  }
+
+  Future<void> recoverCameraCapture() =>
+      _work('Recovering your camera report…', () async {
+        final journal = await _secure.read(key: cameraPendingKey);
+        final lost = await _imagePicker.retrieveLostData();
+        final lostFiles =
+            lost.files ?? (lost.file == null ? <XFile>[] : [lost.file!]);
+        if (journal == null) {
+          for (final file in lostFiles) {
+            await cameraCache.remove(file.path);
+          }
+          return;
+        }
+        final pending = jsonDecode(journal);
+        if (pending is! Map || pending['profileId'] is! String) {
+          throw const FormatException('Invalid camera recovery journal.');
+        }
+        final owner = pending['profileId'] as String;
+        final paths = <String>{
+          if (pending['path'] is String)
+            pending['path'], // prior single-photo journal
+          if (pending['paths'] is List)
+            ...((pending['paths'] as List).whereType<String>()),
+          ...lostFiles.map((file) => file.path),
+        };
+        if (!data.profiles.any((p) => p.id == owner)) {
+          for (final path in paths) {
+            await cameraCache.remove(path);
+          }
+          await _secure.delete(key: cameraPendingKey);
+          return;
+        }
+        final pages = paths.where(cameraCache.ownsPath).map(XFile.new).toList();
+        if (pages.isEmpty) {
+          await _secure.delete(key: cameraPendingKey);
+          if (lost.exception != null) {
+            failure =
+                'The camera was interrupted. Please capture the report again.';
+          }
+          return;
+        }
+        await _saveCameraPages(pages, owner);
+      }, background: true);
 
   Future<void> _importBytes(
     String name,
     String extension,
     Uint8List bytes, {
     Future<void> Function()? onSaved,
+    String? ownerProfileId,
+    bool process = true,
   }) async {
-    final current = profile!;
+    final current = data.profiles
+        .where((p) => p.id == (ownerProfileId ?? activeProfileId))
+        .firstOrNull;
+    if (current == null) throw StateError('Profile access denied.');
     final digest = sha256.convert(bytes).toString();
     if (data.reports.any(
       (r) => r.profileId == current.id && r.digest == digest,
@@ -914,27 +1216,82 @@ class AppController extends ChangeNotifier {
       failure = 'This report is already saved for ${current.name}.';
       return;
     }
+    final importedAt = DateTime.now();
     final report = Report(
       id: _uuid.v4(),
       profileId: current.id,
       name: name,
       extension: extension,
       digest: digest,
-      importedAt: DateTime.now(),
+      importedAt: importedAt,
+      eventDate: DateTime(importedAt.year, importedAt.month, importedAt.day),
+      dateIsFallback: true,
     );
     await vault.saveOriginal(report, bytes);
-    await _commit(data.copy(reports: [...data.reports, report]));
+    await _commit(
+      enqueueReportJob(
+        data.copy(reports: [...data.reports, report]),
+        report.id,
+        report.profileId,
+        DateTime.now(),
+      ),
+    );
+    if (!isPreview && intelligence.available && embeddings.available) {
+      _pendingJobLease ??= await _processing.acquire();
+    }
     await onSaved?.call();
-    await _process(report);
+    if (process) {
+      await _process(report);
+    } else {
+      await _replace(
+        report.copy(
+          status: ReportStatus.needsReview,
+          notice: 'Camera report recovered. Open this profile to read it.',
+        ),
+      );
+    }
   }
 
   Future<void> retry(Report report) =>
-      _work('Reading the saved report…', () => _process(report));
+      _work('Reading the saved report…', () async {
+        if (report.profileId != activeProfileId) {
+          throw StateError('Profile access denied.');
+        }
+        await _commit(
+          enqueueReportJob(
+            data,
+            report.id,
+            report.profileId,
+            DateTime.now(),
+            resetAttempts: true,
+          ),
+        );
+        await _process(report);
+      }, background: true);
 
-  Future<void> _process(Report report) async {
-    final owner = profile;
+  Future<void> _process(Report report, {bool backgroundJob = false}) async {
+    final stored = data.reports
+        .where((r) => r.id == report.id && r.profileId == report.profileId)
+        .firstOrNull;
+    if (stored == null) throw StateError('Report access denied.');
+    report = stored;
+    final owner = backgroundJob
+        ? data.profiles.where((p) => p.id == report.profileId).firstOrNull
+        : profile;
     if (owner == null || owner.id != report.profileId) {
       throw StateError('Profile access denied.');
+    }
+    if (!data.processingJobs.any(
+      (j) => j.reportId == report.id && j.profileId == owner.id,
+    )) {
+      await _commit(
+        enqueueReportJob(data, report.id, owner.id, DateTime.now()),
+      );
+    }
+    if (intelligence.available && embeddings.available) {
+      // Reserve an attempt before inference, so repeated process kills cannot
+      // reset the retry cap. Success removes the job; failure keeps its backoff.
+      await _commit(failReportJob(data, report.id, owner.id, DateTime.now()));
     }
     var next = report.copy(status: ReportStatus.processing, clearSummary: true);
     await _replace(next);
@@ -964,54 +1321,13 @@ class AppController extends ChangeNotifier {
         status: ReportStatus.needsReview,
       );
       await _replace(next);
-      if (intelligence.available) {
-        announceStep('Organizing the report by date and category…');
-        final organizerLines = [
-          ...lines.take(16),
-          ...lines
-              .skip(16)
-              .where(
-                (l) => RegExp(
-                  r'\b(?:date|report|collection|visit|issued|vaccination)\b',
-                  caseSensitive: false,
-                ).hasMatch(l.text),
-              )
-              .take(8),
-        ];
-        final organized = await generateValidatedReportOrganization(
-          intelligence: intelligence,
-          lines: organizerLines,
-          now: DateTime.now(),
-          status: announceStep,
-        );
-        next = next.copy(
-          type: organized.type,
-          eventDate: organized.eventDate,
-          clearEventDate: organized.eventDate == null,
-        );
-        final facts = <MedicalFact>[];
-        var rejected = 0;
-        for (var start = 0; start < lines.length; start += 12) {
-          announceStep(
-            'Extracting facts (${start + 1}/${lines.length} source rows)…',
-          );
-          final batch = lines.skip(start).take(12).toList();
-          final result = await generateValidatedReportExtraction(
-            intelligence: intelligence,
-            lines: batch,
-            status: announceStep,
-          );
-          facts.addAll(result.facts);
-          rejected += result.rejected;
-        }
-        next = next.copy(
-          facts: preserveCorrections(facts, aligned.corrections),
-          modelVersion: 'local:${data.modelType}:prompts-v1',
-          notice: rejected > 0
-              ? '$rejected unsupported proposals were excluded. Review the source.'
-              : null,
-        );
-      }
+      final discovered = discoverReportDate(lines);
+      next = next.copy(
+        eventDate: discovered.date,
+        dateIsFallback: discovered.isFallback,
+        type: discoverReportCategory(lines),
+      );
+      await _replace(next);
       if (embeddings.available) {
         announceStep('Building the local search index…');
         final vectors = <String, List<double>>{};
@@ -1037,18 +1353,32 @@ class AppController extends ChangeNotifier {
             ? 'Image text was transcribed by the local model. Check every value against the original. ${next.notice ?? ""}'
             : intelligence.available
             ? next.notice
-            : 'Text is searchable locally. Add an assistant model to extract structured facts.',
+            : 'Text is searchable locally. Local Markdown notes will be prepared when the assistant model is ready.',
       );
       await _replace(next);
-      if (intelligence.available && next.facts.isNotEmpty) {
+      if (intelligence.available) {
         await _summarizeReport(next, owner);
       }
-      await _appendTurn(
-        ChatEntry(
-          'Saved **${report.name}** on this phone. ${next.lines.length} source rows are available.',
-          hits: next.lines.take(2).map((l) => EvidenceHit(next, l, 1)).toList(),
-        ),
-      );
+      final completed = data.reports
+          .where((r) => r.id == report.id && r.profileId == owner.id)
+          .first;
+      final finished =
+          intelligence.available &&
+          embeddings.available &&
+          !hasSparseText &&
+          completed.summaryMarkdown?.isNotEmpty == true;
+      if (finished) await _commit(finishReportJob(data, report.id, owner.id));
+      if (!backgroundJob) {
+        await _appendTurn(
+          ChatEntry(
+            'Saved **${report.name}** on this phone. ${next.lines.length} source rows are available.',
+            hits: next.lines
+                .take(2)
+                .map((l) => EvidenceHit(next, l, 1))
+                .toList(),
+          ),
+        );
+      }
     } catch (_) {
       await _replace(
         next.copy(
@@ -1057,63 +1387,44 @@ class AppController extends ChangeNotifier {
               'Processing stopped locally. The original and any saved text are available. Retry after checking model setup.',
         ),
       );
+    } finally {
+      await _releaseFinishedQueue();
     }
   }
 
   Future<void> _summarizeReport(Report report, Profile owner) async {
-    announceStep('Writing report summary…');
-    final sources = report.facts
-        .map(
-          (f) => {
-            'sourceId': '${report.id}/${f.sourceLineId}',
-            'sourceMethod': report.lines
-                .where((l) => l.id == f.sourceLineId)
-                .firstOrNull
-                ?.method,
-            ...f.toJson(),
-          },
-        )
-        .toList();
-    // Short per-call aliases: small models copy [S1] reliably where long
-    // canonical IDs get garbled. Canonical mappings stay local; prompt
-    // sourceId fields contain only aliases.
-    final aliases = CitationAliases.fromCanonical(
-      sources.map((x) => x['sourceId'] as String).toList(),
-    );
-    final canonical = sources.map((x) => x['sourceId'] as String).toSet();
-    final payload = {
-      'task': 'Summarize this report',
-      'category': report.type,
-      'eventDate': report.eventDate?.toIso8601String(),
-      'ageAtEvent': ageAtEvent(owner, report.eventDate),
-      'citationGuide': aliases.instruction(),
-      'facts': sources
-          .map((x) => {...x, 'sourceId': aliases.aliasFor(x['sourceId'])})
-          .toList(),
-    };
-    // Malformed summaries are repaired like chat answers: the same payload
-    // and aliases drive at most two controlled citation/format repairs, and
-    // a rejected draft is never echoed back. Null on cap keeps the existing
-    // no-summary notice path below.
-    final output = await generateValidatedAnswer(
-      generate: intelligence.generate,
-      instruction: summaryPrompt,
-      payload: payload,
+    announceStep('Writing report notes as Markdown…');
+    final output = await generateReportMarkdown(
+      intelligence,
+      report,
+      owner,
+      discovered: ReportDate(
+        date: report.eventDate ?? DateTime.now(),
+        isFallback: report.dateIsFallback,
+      ),
+      category: report.type,
+      ageAtEvent: report.dateIsFallback
+          ? null
+          : ageAtEvent(owner, report.eventDate),
       status: announceStep,
-      validate: (text) =>
-          aliases.validate(text, canonical) &&
-          validCitations(aliases.resolveText(text), canonical),
     );
     if (output == null) {
       await _replace(
         report.copy(
+          status: ReportStatus.needsReview,
           notice:
-              'Summary citations could not be validated. Review the extracted facts.',
+              'Report notes could not be linked to their sources. The original is saved and processing will retry.',
         ),
       );
       return;
     }
-    await _replace(report.copy(summaryMarkdown: aliases.resolveText(output)));
+    await _replace(
+      report.copy(
+        summaryMarkdown: output,
+        modelVersion: 'local:${data.modelType}:markdown-v1',
+        notice: report.notice,
+      ),
+    );
   }
 
   Future<void> correctFact(
@@ -1709,5 +2020,5 @@ class AppController extends ChangeNotifier {
             : sources,
       ),
     );
-  });
+  }, background: true);
 }

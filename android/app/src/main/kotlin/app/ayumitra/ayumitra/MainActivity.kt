@@ -14,6 +14,7 @@ class MainActivity : FlutterActivity() {
         super.configureFlutterEngine(flutterEngine)
         LocalEmbeddingBridge.register(flutterEngine, this)
         LocalModelSetupBridge.register(flutterEngine, this)
+        LocalProcessingBridge.register(flutterEngine, this)
         LocalVoiceBridge.register(flutterEngine, this)
     }
     override fun onRequestPermissionsResult(

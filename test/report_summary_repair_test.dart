@@ -7,6 +7,7 @@ import 'package:ayumitra/domain/records.dart';
 import 'package:ayumitra/preview/demo_controller.dart';
 import 'package:ayumitra/services/local_file_picker.dart';
 import 'package:ayumitra/services/local_intelligence.dart';
+import 'package:ayumitra/services/report_markdown.dart';
 import 'package:ayumitra/services/local_parser.dart';
 import 'package:ayumitra/storage/encrypted_vault.dart';
 import 'package:cryptography/cryptography.dart';
@@ -17,10 +18,9 @@ const _text =
     'SYNTHETIC REPORT - NOT A REAL PATIENT\n'
     'Hemoglobin 11.2 g/dL\n';
 const _noSummaryNotice =
-    'Summary citations could not be validated. Review the extracted facts.';
+    'Report notes could not be linked to their sources. The original is saved and processing will retry.';
 
-/// Scripted local model: organizer/extractor answers are fixed synthetic
-/// fixtures; summary answers come from the per-test script queue.
+/// Scripted local model: direct Markdown report notes come from the script queue.
 class SummaryScriptIntelligence extends LocalIntelligence {
   SummaryScriptIntelligence(this.summaryOutputs);
   final List<String> summaryOutputs;
@@ -32,26 +32,8 @@ class SummaryScriptIntelligence extends LocalIntelligence {
 
   @override
   Future<String> generate(String instruction, String input) async {
-    if (instruction == organizerPrompt) {
-      return '{"type":"lab","eventDate":null,"dateEvidence":null}';
-    }
-    if (instruction == extractorPrompt) {
-      return jsonEncode({
-        'facts': [
-          {
-            'kind': 'lab',
-            'name': 'Hemoglobin',
-            'value': '11.2',
-            'unit': 'g/dL',
-            'range': '',
-            'sourceLineId': 'p1-l2',
-            'evidence': 'Hemoglobin 11.2 g/dL',
-          },
-        ],
-      });
-    }
-    if (instruction == summaryPrompt ||
-        instruction.startsWith('$summaryPrompt\n\nOUTPUT REPAIR:')) {
+    if (instruction == reportMarkdownPrompt ||
+        instruction.startsWith('$reportMarkdownPrompt\n\nOUTPUT REPAIR:')) {
       summaryInputs.add(input);
       final index = summaryCalls++;
       return index < summaryOutputs.length
@@ -109,7 +91,7 @@ void main() {
       try {
         final intelligence = SummaryScriptIntelligence([
           'All good, no citations here.',
-          'Hemoglobin 11.2 g/dL [S1].',
+          'Hemoglobin 11.2 g/dL [S2].',
         ]);
         final controller = await _nativeController(directory, intelligence);
         expect(intelligence.summaryCalls, 2);
@@ -120,7 +102,11 @@ void main() {
           isFalse,
         );
         final report = controller.reports.single;
-        expect(report.facts.any((f) => f.value == '11.2'), isTrue);
+        expect(report.facts, isEmpty);
+        expect(
+          report.lines.any((l) => l.text == 'Hemoglobin 11.2 g/dL'),
+          isTrue,
+        );
         _expectResolvedSummary(report.summaryMarkdown);
         expect(report.notice, isNull);
         controller.dispose();
@@ -144,12 +130,22 @@ void main() {
         // First attempt plus two controlled repairs, then the cap fallback.
         expect(intelligence.summaryCalls, 3);
         for (final input in intelligence.summaryInputs) {
-          expect(input, contains('"task":"Summarize this report"'));
+          expect(
+            input,
+            contains(
+              '"task":"Extract key report information and dates as Markdown"',
+            ),
+          );
+          expect(jsonDecode(input)['sourceRows'], hasLength(2));
         }
         final report = controller.reports.single;
         expect(report.summaryMarkdown, isNull);
         expect(report.notice, _noSummaryNotice);
-        expect(report.facts.any((f) => f.value == '11.2'), isTrue);
+        expect(report.facts, isEmpty);
+        expect(
+          report.lines.any((l) => l.text == 'Hemoglobin 11.2 g/dL'),
+          isTrue,
+        );
         controller.dispose();
       } finally {
         await directory.delete(recursive: true);
@@ -162,7 +158,7 @@ void main() {
     () async {
       final intelligence = SummaryScriptIntelligence([
         'All good, no citations here.',
-        'Hemoglobin 11.2 g/dL [S1].',
+        'Hemoglobin 11.2 g/dL [S2].',
       ]);
       final controller = DemoController(intelligence: intelligence)
         ..loaded = true

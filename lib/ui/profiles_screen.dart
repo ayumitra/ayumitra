@@ -4,6 +4,8 @@ import 'package:intl/intl.dart';
 import '../app_controller.dart';
 import '../domain/records.dart';
 
+enum _ProfileAction { viewFiles, edit, delete }
+
 /// Separate create/edit/switch manager for profiles.
 ///
 /// Calls the controller contract from board MSG-038:
@@ -39,7 +41,10 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
   bool isChild = true;
   String? editingId;
   String? formError;
+  String? _deletingProfileId;
+  bool _deleteFailed = false;
   AppController get c => widget.controller;
+  bool get _actionsEnabled => !c.busy && _deletingProfileId == null;
 
   @override
   void initState() {
@@ -74,6 +79,151 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
     isChild = p.isChild;
     formError = null;
   });
+
+  Future<void> _viewFiles(Profile profile) async {
+    if (!_actionsEnabled || widget.onViewFiles == null) return;
+    await c.selectProfile(profile.id);
+    if (!mounted || c.activeProfileId != profile.id) return;
+    widget.onViewFiles!.call(profile);
+  }
+
+  Future<void> _deleteProfile(Profile profile) async {
+    if (!_actionsEnabled) return;
+    final fileCount = c.data.reports
+        .where((report) => report.profileId == profile.id)
+        .length;
+    final conversationCount = c.data.sessions
+        .where((session) => session.profileId == profile.id)
+        .length;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Delete ${profile.name}’s profile?'),
+        content: Text(
+          'This will permanently delete ${profile.name}’s profile, '
+          '$fileCount ${fileCount == 1 ? 'file' : 'files'}, '
+          '$conversationCount ${conversationCount == 1 ? 'conversation' : 'conversations'}, '
+          'and all remembered context. This cannot be undone.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Keep profile'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(context).colorScheme.error,
+              foregroundColor: Theme.of(context).colorScheme.onError,
+            ),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Delete profile'),
+          ),
+        ],
+      ),
+    );
+    if (!mounted || confirmed != true || !_actionsEnabled) return;
+    if (!c.data.profiles.any((person) => person.id == profile.id)) return;
+    setState(() {
+      _deletingProfileId = profile.id;
+      _deleteFailed = false;
+    });
+    try {
+      await c.deleteProfile(profile.id);
+    } catch (_) {
+      if (mounted) setState(() => _deleteFailed = true);
+    } finally {
+      if (mounted) {
+        if (editingId == profile.id &&
+            !c.data.profiles.any((person) => person.id == profile.id)) {
+          name.clear();
+          dobText.clear();
+          history.clear();
+          _cancelForm();
+        }
+        setState(() => _deletingProfileId = null);
+      }
+    }
+  }
+
+  Widget _profileCard(Profile profile) => LayoutBuilder(
+    builder: (context, constraints) {
+      final roomy = constraints.maxWidth >= 420;
+      return Card(
+        key: ValueKey('managed-profile-${profile.id}'),
+        child: ListTile(
+          leading: roomy
+              ? Icon(
+                  c.activeProfileId == profile.id
+                      ? Icons.check_circle
+                      : Icons.circle_outlined,
+                )
+              : null,
+          title: Text(
+            profile.name,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+          ),
+          subtitle: Text(
+            '${profile.dateOfBirth == null ? 'Birth date not set' : 'Born ${DateFormat.yMMMd('en_US').format(profile.dateOfBirth!)}'}\n'
+            '${profile.isChild ? 'Child' : 'Adult'} profile',
+          ),
+          isThreeLine: true,
+          trailing: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (roomy && widget.onViewFiles != null)
+                IconButton(
+                  tooltip: 'View files',
+                  onPressed: _actionsEnabled ? () => _viewFiles(profile) : null,
+                  icon: const Icon(Icons.folder_outlined),
+                ),
+              PopupMenuButton<_ProfileAction>(
+                key: ValueKey('profile-actions-${profile.id}'),
+                tooltip: 'Profile actions for ${profile.name}',
+                enabled: _actionsEnabled,
+                onSelected: (action) {
+                  if (!_actionsEnabled) return;
+                  switch (action) {
+                    case _ProfileAction.viewFiles:
+                      _viewFiles(profile);
+                      return;
+                    case _ProfileAction.edit:
+                      _editForm(profile);
+                      return;
+                    case _ProfileAction.delete:
+                      _deleteProfile(profile);
+                      return;
+                  }
+                },
+                itemBuilder: (context) => [
+                  if (!roomy && widget.onViewFiles != null)
+                    const PopupMenuItem(
+                      value: _ProfileAction.viewFiles,
+                      child: Text('View files'),
+                    ),
+                  const PopupMenuItem(
+                    value: _ProfileAction.edit,
+                    child: Text('Edit profile'),
+                  ),
+                  PopupMenuItem(
+                    value: _ProfileAction.delete,
+                    child: Text(
+                      'Delete profile',
+                      style: TextStyle(
+                        color: Theme.of(context).colorScheme.error,
+                      ),
+                    ),
+                  ),
+                ],
+                icon: const Icon(Icons.more_vert),
+              ),
+            ],
+          ),
+          onTap: _actionsEnabled ? () => c.selectProfile(profile.id) : null,
+        ),
+      );
+    },
+  );
 
   void _cancelForm() => setState(() {
     editingId = null;
@@ -112,7 +262,7 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
   }
 
   Future<void> _save() async {
-    if (c.busy) return;
+    if (!_actionsEnabled) return;
     final dob = _parseStrictDob(dobText.text);
     if (dob == null) {
       setState(() => formError = 'Enter the birth date as YYYY-MM-DD.');
@@ -160,47 +310,18 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
             style: TextStyle(fontSize: 14, height: 1.5),
           ),
           const SizedBox(height: 12),
-          for (final profile in c.data.profiles)
-            Card(
-              child: ListTile(
-                leading: Icon(
-                  c.activeProfileId == profile.id
-                      ? Icons.check_circle
-                      : Icons.circle_outlined,
-                ),
-                title: Text(profile.name),
-                subtitle: Text(
-                  '${profile.dateOfBirth == null ? 'Birth date not set' : 'Born ${DateFormat.yMMMd().format(profile.dateOfBirth!)}'}\n'
-                  '${profile.isChild ? 'Child' : 'Adult'} profile',
-                ),
-                isThreeLine: true,
-                trailing: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    if (widget.onViewFiles != null)
-                      IconButton(
-                        tooltip: 'View files',
-                        onPressed: c.busy
-                            ? null
-                            : () async {
-                                await c.selectProfile(profile.id);
-                                widget.onViewFiles!.call(profile);
-                              },
-                        icon: const Icon(Icons.folder_outlined),
-                      ),
-                    IconButton(
-                      tooltip: 'Edit profile',
-                      onPressed: c.busy ? null : () => _editForm(profile),
-                      icon: const Icon(Icons.edit_outlined),
-                    ),
-                  ],
-                ),
-                onTap: c.busy ? null : () => c.selectProfile(profile.id),
+          for (final profile in c.data.profiles) _profileCard(profile),
+          if (c.failure != null || _deleteFailed)
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Text(
+                c.failure ?? 'Couldn’t delete this profile. Please try again.',
+                style: TextStyle(color: Theme.of(context).colorScheme.error),
               ),
             ),
           const SizedBox(height: 12),
           OutlinedButton.icon(
-            onPressed: c.busy ? null : _newForm,
+            onPressed: _actionsEnabled ? _newForm : null,
             icon: const Icon(Icons.person_add_outlined),
             label: const Text('New profile'),
           ),
@@ -213,19 +334,19 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
             const SizedBox(height: 12),
             TextField(
               controller: name,
-              enabled: !c.busy,
+              enabled: _actionsEnabled,
               decoration: const InputDecoration(labelText: 'Name'),
             ),
             const SizedBox(height: 12),
             TextField(
               controller: dobText,
-              enabled: !c.busy,
+              enabled: _actionsEnabled,
               keyboardType: TextInputType.datetime,
               decoration: InputDecoration(
                 labelText: 'Date of birth (YYYY-MM-DD)',
                 suffixIcon: IconButton(
                   tooltip: 'Pick a date',
-                  onPressed: c.busy ? null : _pickDob,
+                  onPressed: _actionsEnabled ? _pickDob : null,
                   icon: const Icon(Icons.calendar_month_outlined),
                 ),
               ),
@@ -233,7 +354,7 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
             const SizedBox(height: 12),
             TextField(
               controller: history,
-              enabled: !c.busy,
+              enabled: _actionsEnabled,
               minLines: 3,
               maxLines: 6,
               decoration: const InputDecoration(
@@ -245,7 +366,9 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
               title: const Text('Child profile'),
               subtitle: const Text('A caregiver manages this history.'),
               value: isChild,
-              onChanged: c.busy ? null : (v) => setState(() => isChild = v),
+              onChanged: _actionsEnabled
+                  ? (v) => setState(() => isChild = v)
+                  : null,
             ),
             if (formError != null)
               Padding(
@@ -255,23 +378,18 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
                   style: TextStyle(color: Theme.of(context).colorScheme.error),
                 ),
               ),
-            if (c.failure != null)
-              Padding(
-                padding: const EdgeInsets.only(top: 8),
-                child: Text(c.failure!),
-              ),
             const SizedBox(height: 12),
             Row(
               children: [
                 Expanded(
                   child: FilledButton(
-                    onPressed: c.busy ? null : _save,
+                    onPressed: _actionsEnabled ? _save : null,
                     child: const Text('Save profile'),
                   ),
                 ),
                 const SizedBox(width: 12),
                 TextButton(
-                  onPressed: c.busy ? null : _cancelForm,
+                  onPressed: _actionsEnabled ? _cancelForm : null,
                   child: const Text('Cancel'),
                 ),
               ],

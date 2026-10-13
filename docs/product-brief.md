@@ -17,7 +17,7 @@ Android and iOS are both target platforms. EmbeddingGemma 2 generates search emb
 | Lifelong history | Build a history organized by clinical date, age at event, and category, with source-linked Markdown summaries. |
 | Search | Find records by meaning using EmbeddingGemma 2 locally. |
 | Local intelligence | Use one local LLM with separate system prompts for organizing, extraction, and summarization. |
-| Conversation | Use text and voice as the main interface; support “Ayu” (aa-yuh) voice commands where feasible. |
+| Conversation | Use text and explicit microphone input as the main interface; wake-word development is parked. |
 | Image understanding | Interpret images; image-based diagnosis is part of the longer-term vision. |
 | Medicines | Track medicines being taken, answer information questions using internet sources, and maintain schedules. |
 | Sharing | Generate an anonymized report for the user to review and share. |
@@ -36,9 +36,9 @@ Keep saved conversations within their owning profile. User-stated context may he
 
 Onboarding should also capture language preference and show model-download size and progress. Allow typing, saving reports, and keyword search over available extracted text while models download. Speech recognition must use a verified on-device path; if local speech is unavailable for a device or language, retain typed input instead of silently using a remote service.
 
-Preserve original reports as the source of truth. Store extracted facts separately, including source report, page or region, original text, date, units, and report reference ranges. Let users correct extracted facts without editing the original. Keep user corrections, reported findings, and AI interpretations distinguishable.
+Preserve original reports as the source of truth. Camera capture supports up to five pages grouped as one encrypted original, with page-specific source references. Save the original before inference; preserve failed or interrupted jobs in a profile-owned queue with bounded retries. Android foreground protection supports processing while locked; the current retry checker runs while the app process is alive and resumes on reopening, rather than scheduling a new headless process after force-stop. Extract key report information and dates as flexible Markdown, retaining source report/page references, exact values and units. No fixed JSON fact schema is required from the model. Give files a sorting date from visible report content; when no usable date is visible, use the current calendar date and label it as a filing-date fallback. Let users correct extracted facts without editing the original. Keep user corrections, reported findings, and AI interpretations distinguishable.
 
-Generate summaries from retrieved source facts, not solely from earlier AI summaries. Link factual claims to reports and say when supporting information is missing or contradictory. Separate clinical event dates from upload dates.
+Generate Markdown notes and answers from original source rows, not solely from earlier AI summaries. Link factual claims to reports and say when supporting information is missing or contradictory. Separate clinical event dates from upload dates.
 
 Treat image description, transcription of a radiology report, and diagnosing a condition from clinical images as separate capabilities. For the initial release, prioritize the first two. Diagnostic functionality needs its own clinician-led evaluation before it can be relied upon; choosing a vision-capable LLM does not establish diagnostic accuracy.
 
@@ -74,7 +74,8 @@ Record vault  Import pipeline      Medicine tools
                  Answer with report links
 
 Explicit network boundary: agent-invoked public web search and optional model distribution.
-The initial app imports model files locally; it has no model-download flow.
+Android automatically downloads and verifies the fixed public Gemma 4 E2B and
+EmbeddingGemma 2 Text 270M weights; iOS currently imports model files locally.
 Embeddings, record retrieval, extraction, and summaries run on-device.
 ```
 
@@ -82,14 +83,14 @@ Use one local model runtime with independent prompt roles and contexts: organize
 
 | Prompt role | Responsibility | Application enforcement |
 | --- | --- | --- |
-| Organizer | Propose report type, clinical date, and provider from the source. | Validate fields and preserve unknown or ambiguous values. |
-| Extractor | Propose facts with original values, units, reference ranges, and page/region links. | Validate structure and source references; flag unsupported or uncertain fields for review. |
+| Report metadata | Attach an available source date and optional category. | Use a labelled current-day filing date when no usable source date is found. |
+| Report extraction | Extract key information and dates as readable Markdown with flexible headings, bullets or tables. | Preserve exact source values and references; flag image/unreadable content for review. |
 | Summarizer | Explain retrieved evidence and user-provided history in the requested language. | Check citation references and keep unsupported interpretations distinguishable from reported facts. |
 | Planner | Propose calls to a small set of application tools based on the user's request. | Enforce profile scope, tool arguments, and authorization in code; clarify ambiguous actions. |
 
 Model-reported confidence can help prioritize review, but must not be presented as a calibrated probability of medical correctness.
 
-The vault should include encrypted original files, a local structured database, and rebuildable search indexes. Protect encryption keys using platform secure storage. Keep health content out of ordinary logs and analytics. Add an explicit encrypted backup/restore path: a lifelong record must survive a lost or replaced phone. Track model and prompt versions so extractions can be regenerated while preserving user corrections.
+The vault should include encrypted original files, a local structured database, and rebuildable search indexes. Protect encryption keys using platform secure storage. Deleting a profile removes its reports, originals, conversations, derived memory, exports and pending jobs. Persist logical erasure before filesystem cleanup, with durable cleanup markers for interrupted deletion. Keep health content out of ordinary logs and analytics. Add an explicit encrypted backup/restore path: a lifelong record must survive a lost or replaced phone. Track model and prompt versions so extractions can be regenerated while preserving user corrections.
 
 For numerical questions, retrieve structured results with date and unit filters; combine keyword and semantic search for narrative questions. Store the embedding model/version and dimension with each index. Provider changes require reindexing; vectors from different models must not be mixed.
 

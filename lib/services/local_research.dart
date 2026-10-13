@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import '../domain/model_json.dart';
 import 'web_search.dart';
 
 typedef ResearchGenerate =
@@ -189,12 +190,7 @@ class _ResearchAction {
   final String? query;
 }
 
-dynamic _json(String text) => jsonDecode(
-  text
-      .trim()
-      .replaceFirst(RegExp(r'^```(?:json)?\s*'), '')
-      .replaceFirst(RegExp(r'\s*```$'), ''),
-);
+dynamic _json(String text) => jsonDecode(unfenceJson(text));
 
 List<_ResearchAction> _actions(String response) {
   final root = _json(response);

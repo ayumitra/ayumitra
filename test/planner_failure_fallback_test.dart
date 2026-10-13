@@ -7,6 +7,7 @@ import 'package:ayumitra/domain/agent_plan.dart';
 import 'package:ayumitra/domain/records.dart';
 import 'package:ayumitra/preview/demo_controller.dart';
 import 'package:ayumitra/services/local_intelligence.dart';
+import 'package:ayumitra/services/report_markdown.dart';
 import 'package:ayumitra/services/local_research.dart';
 import 'package:ayumitra/services/web_search.dart';
 import 'package:ayumitra/storage/encrypted_vault.dart';
@@ -26,6 +27,12 @@ class _BrokenPlanner extends LocalIntelligence {
   bool get available => true;
   @override
   Future<String> generate(String instruction, String input) async {
+    if (instruction == reportMarkdownPrompt ||
+        instruction.startsWith('$reportMarkdownPrompt\n\nOUTPUT REPAIR:')) {
+      final data = jsonDecode(input) as Map;
+      final row = (data['sourceRows'] as List).cast<Map>().first;
+      return '${row['text']} [${row['sourceId']}].';
+    }
     if (instruction == organizerPrompt) return '{"type":"lab"}';
     if (instruction == extractorPrompt) return '{"facts":[]}';
     if (instruction == plannerPrompt) {

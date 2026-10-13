@@ -6,6 +6,7 @@ import 'package:ayumitra/app_controller.dart';
 import 'package:ayumitra/domain/records.dart';
 import 'package:ayumitra/services/local_file_picker.dart';
 import 'package:ayumitra/services/local_intelligence.dart';
+import 'package:ayumitra/services/report_markdown.dart';
 import 'package:ayumitra/services/local_parser.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -38,9 +39,15 @@ class ImportCheckingIntelligence extends LocalIntelligence {
   Future<String> generate(String instruction, String input) async {
     expect(await staged.exists(), isFalse);
     checked = true;
-    return instruction == organizerPrompt
-        ? '{"type":"lab","eventDate":null,"dateEvidence":null}'
-        : '{"facts":[]}';
+    expect(
+      instruction == reportMarkdownPrompt ||
+          instruction.startsWith('$reportMarkdownPrompt\n\nOUTPUT REPAIR:'),
+      isTrue,
+    );
+    final row = ((jsonDecode(input) as Map)['sourceRows'] as List)
+        .cast<Map>()
+        .first;
+    return '${row['text']} [${row['sourceId']}].';
   }
 }
 
@@ -48,10 +55,17 @@ class InvalidDateIntelligence extends LocalIntelligence {
   @override
   bool get available => true;
   @override
-  Future<String> generate(String instruction, String input) async =>
-      instruction == organizerPrompt
-      ? '{"type":"lab","eventDate":"2018-01-01","dateEvidence":"DOB 2018-01-01","dateSourceLineId":"p1-l1"}'
-      : '{"facts":[]}';
+  Future<String> generate(String instruction, String input) async {
+    expect(
+      instruction == reportMarkdownPrompt ||
+          instruction.startsWith('$reportMarkdownPrompt\n\nOUTPUT REPAIR:'),
+      isTrue,
+    );
+    final row = ((jsonDecode(input) as Map)['sourceRows'] as List)
+        .cast<Map>()
+        .first;
+    return '${row['text']} [${row['sourceId']}].';
+  }
 }
 
 void main() {
@@ -234,8 +248,17 @@ void main() {
           report,
           Uint8List.fromList('DOB 2018-01-01'.codeUnits),
         );
+        final before = DateTime.now();
         await controller.retry(report);
-        expect(controller.reports.single.eventDate, isNull);
+        final after = DateTime.now();
+        final updated = controller.reports.single;
+        expect(updated.dateIsFallback, isTrue);
+        expect(updated.eventDate, isNot(DateTime.utc(2018, 1, 1)));
+        expect(updated.eventDate, isNot(DateTime.utc(2020)));
+        expect([
+          DateTime.utc(before.year, before.month, before.day),
+          DateTime.utc(after.year, after.month, after.day),
+        ], contains(updated.eventDate));
         expect(controller.reports.single.vectors, isEmpty);
         controller.dispose();
       } finally {

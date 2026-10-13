@@ -30,12 +30,14 @@ import 'package:path_provider/path_provider.dart';
 import 'package:pdfrx/pdfrx.dart';
 
 import 'package:ayumitra/app_controller.dart';
+import 'package:ayumitra/domain/extraction.dart';
 import 'package:ayumitra/domain/records.dart';
 import 'package:ayumitra/services/local_embeddings.dart';
 import 'package:ayumitra/services/local_file_picker.dart';
 import 'package:ayumitra/services/automatic_models.dart';
 import 'package:ayumitra/services/local_intelligence.dart';
 import 'package:ayumitra/services/notice_registry.dart';
+import 'package:ayumitra/services/report_markdown.dart';
 import 'package:ayumitra/services/web_search.dart';
 import 'package:ayumitra/ui/app.dart';
 
@@ -72,6 +74,35 @@ bool _hasReportedValue(String text) => RegExp(
 ).hasMatch(text.replaceAll(RegExp(r'[*_`]'), ''));
 
 void _stage(String name) => debugPrint('AYUMITRA_DEVICE STAGE $name');
+
+bool _hasFixtureValue(String text) => RegExp(
+  r'(?<![\d.])11\.2(?![\d.])',
+).hasMatch(text.replaceAll(RegExp(r'[*_`]'), ''));
+
+bool _hasFixtureSource(Report report) =>
+    report.lines.any((line) => _hasFixtureValue(line.text)) &&
+    report.lines.any((line) => line.text.contains('g/dL'));
+
+bool _hasFixtureMarkdown(Report report) {
+  final markdown = report.summaryMarkdown;
+  if (markdown == null ||
+      !_hasFixtureValue(markdown) ||
+      !markdown.contains('g/dL')) {
+    return false;
+  }
+  final owned = report.lines.map((line) => '${report.id}/${line.id}').toSet();
+  return validCitations(markdown, owned) &&
+      report.lines.any(
+        (line) =>
+            _hasFixtureValue(line.text) &&
+            markdown.contains('[${report.id}/${line.id}]'),
+      ) &&
+      report.lines.any(
+        (line) =>
+            line.text.contains('g/dL') &&
+            markdown.contains('[${report.id}/${line.id}]'),
+      );
+}
 
 void _requireDeviceDebugBuild(bool isDebugBuild) {
   if (!isDebugBuild) {
@@ -129,19 +160,22 @@ int _checkReportCore(Report report) {
   }
   debugPrint('AYUMITRA_DEVICE VECTOR_DIM $dim');
   _require(
-    report.facts.any((f) => f.value == '11.2' && f.unit == 'g/dL'),
-    'validated exact 11.2 g/dL fact',
+    _hasFixtureSource(report),
+    'owned source rows preserve exact 11.2 and g/dL',
   );
   _require(report.type == 'lab', 'report category lab');
   final event = report.eventDate;
   _require(
-    event != null && event.year == 2026 && event.month == 3 && event.day == 14,
+    event != null &&
+        event.year == 2026 &&
+        event.month == 3 &&
+        event.day == 14 &&
+        !report.dateIsFallback,
     'report clinical date 2026-03-14',
   );
   _require(
-    report.summaryMarkdown?.isNotEmpty == true &&
-        report.summaryMarkdown!.contains('11.2'),
-    'Markdown summary carries fixture value',
+    _hasFixtureMarkdown(report),
+    'Markdown summary preserves fixture value and unit with owned citations',
   );
   return dim;
 }
@@ -155,6 +189,8 @@ class _DeviceIntelligence extends LocalIntelligence {
         ? 'organizer'
         : instruction.startsWith(extractorPrompt)
         ? 'extractor'
+        : instruction.startsWith(reportMarkdownPrompt)
+        ? 'report-markdown'
         : instruction.startsWith(summaryPrompt)
         ? 'summary'
         : 'assistant';
@@ -197,6 +233,8 @@ class _DeviceController extends AppController {
     : super(intelligence: _DeviceIntelligence(), webSearch: _DeviceWebSearch());
   @override
   bool get automaticModelsSupported => true;
+  @override
+  bool get automaticProcessingChecksEnabled => false;
 }
 
 Future<void> _installModels(AppController c) async {
@@ -267,7 +305,7 @@ Future<void> _setupTask(AppController c) async {
   );
   await c.selectProfile(owner);
   _require(
-    c.reports.any((r) => r.facts.any((f) => f.value == '11.2')),
+    c.reports.any((r) => _hasFixtureSource(r) && _hasFixtureMarkdown(r)),
     'owner reports intact after isolation check',
   );
 }
@@ -410,7 +448,7 @@ Future<void> _queryUpdateChecks(AppController c, String owner) async {
   );
   _require(
     c.reports.map((r) => r.digest).join() == originals.join() &&
-        c.reports.every((r) => r.facts.any((f) => f.value == '11.2')),
+        c.reports.every((r) => _hasFixtureSource(r) && _hasFixtureMarkdown(r)),
     'chat update preserves original dated report values',
   );
   _stage('dated-history');
@@ -463,7 +501,7 @@ Future<void> _deletionTask(AppController c) async {
   _require(owner != null, 'own synthetic profile present for deletion task');
   await c.selectProfile(owner!);
   _require(
-    c.reports.any((r) => r.facts.any((f) => f.value == '11.2')),
+    c.reports.any((r) => _hasFixtureSource(r) && _hasFixtureMarkdown(r)),
     'own synthetic file present before deletion task',
   );
   final profilesBefore = c.data.profiles.length;
@@ -475,7 +513,7 @@ Future<void> _deletionTask(AppController c) async {
     'conversation delete clears its derived memory',
   );
   _require(
-    c.reports.any((r) => r.facts.any((f) => f.value == '11.2')),
+    c.reports.any((r) => _hasFixtureSource(r) && _hasFixtureMarkdown(r)),
     'conversation delete preserves report files',
   );
   _require(

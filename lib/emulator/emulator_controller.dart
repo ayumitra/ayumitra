@@ -31,6 +31,7 @@ void requireEmulatorDebugBuild(bool isDebugBuild) {
 class EmulatorAppController extends AppController {
   factory EmulatorAppController({
     http.Client? client,
+    bool automaticProcessingChecks = true,
     String chatModel = emulatorChatModel,
     String visionModel = emulatorVisionModel,
     String embeddingModel = emulatorEmbeddingModel,
@@ -39,6 +40,7 @@ class EmulatorAppController extends AppController {
     // actual build mode, including accidental imports from another entrypoint.
     requireEmulatorDebugBuild(kDebugMode);
     return EmulatorAppController._(
+      automaticProcessingChecks: automaticProcessingChecks,
       intelligence: WebIntelligence(client: client)
         ..endpoint = emulatorLocalEndpoint
         ..chatModel = chatModel
@@ -50,9 +52,15 @@ class EmulatorAppController extends AppController {
   }
 
   EmulatorAppController._({
+    required this.automaticProcessingChecks,
     required WebIntelligence intelligence,
     required WebEmbeddings embeddings,
   }) : super(intelligence: intelligence, embeddings: embeddings);
+
+  final bool automaticProcessingChecks;
+  @override
+  bool get automaticProcessingChecksEnabled =>
+      automaticProcessingChecks && super.automaticProcessingChecksEnabled;
 
   @override
   Future<void> initialize() async {

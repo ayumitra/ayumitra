@@ -120,3 +120,32 @@ DateTime? _checkedDate(int year, int month, int day) {
       ? date
       : null;
 }
+
+/// Trusted discovery of at most one unambiguous supported date in raw
+/// source text: ISO, named-month, or unambiguous numeric forms accepted by
+/// the guards above. Returns null for zero or several dates, DOB-labelled
+/// dates, or future dates. Normalizes only — never infers.
+DateTime? discoverTrustedDate(String text, {DateTime? now}) {
+  final reference = now ?? DateTime.now();
+  final matches = _datePattern.allMatches(text).toList();
+  if (matches.length != 1) return null;
+  final match = matches.single;
+  final candidate = _normalize(match);
+  if (candidate == null) return null;
+  final today = DateTime.utc(reference.year, reference.month, reference.day);
+  if (candidate.isAfter(today)) return null;
+  final before = text.substring(0, match.start);
+  final birth = _birthLabel.allMatches(before).lastOrNull;
+  final clinical = _clinicalLabel.allMatches(before).lastOrNull;
+  if (birth != null && (clinical == null || birth.start > clinical.start)) {
+    return null;
+  }
+  final after = text.substring(match.end);
+  if (RegExp(
+    r'^\s*(?:\([^)]*)?\b(?:DOB|date\s+of\s+birth|birth\s+date)\b',
+    caseSensitive: false,
+  ).hasMatch(after)) {
+    return null;
+  }
+  return candidate;
+}
