@@ -16,6 +16,7 @@ import 'source_screen.dart';
 import 'profiles_screen.dart';
 import 'profile_files_screen.dart';
 import 'profile_home_screen.dart';
+import 'web_search_settings.dart';
 import 'second_opinion_screen.dart';
 
 const ink = Color(0xff203f38);
@@ -1646,7 +1647,6 @@ class SettingsScreen extends StatefulWidget {
 }
 
 class _SettingsScreenState extends State<SettingsScreen> {
-  final keyInput = TextEditingController();
   final endpointInput = TextEditingController();
   final chatModelInput = TextEditingController();
   final visionModelInput = TextEditingController();
@@ -1750,7 +1750,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   @override
   void dispose() {
-    keyInput.dispose();
     endpointInput.dispose();
     chatModelInput.dispose();
     visionModelInput.dispose();
@@ -1955,24 +1954,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
               ),
               const SizedBox(height: 20),
-              const Text(
-                'Public web search',
-                style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
-              ),
-              const Text(
-                'The assistant can look up general information. Private health data is excluded from search queries.',
-              ),
-              TextField(
-                controller: keyInput,
-                obscureText: true,
-                decoration: const InputDecoration(
-                  labelText: 'Brave Search API key (optional)',
-                ),
-              ),
-              TextButton(
-                onPressed: c.busy ? null : () => c.setWebKey(keyInput.text),
-                child: const Text('Save search settings'),
-              ),
+              WebSearchSettings(controller: c),
               ListTile(
                 leading: const Icon(Icons.code),
                 title: const Text('Open-source licenses'),
@@ -2085,42 +2067,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 padding: const EdgeInsets.all(20),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text(
-                      'Web information tool',
-                      style: TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    const Text(
-                      'The assistant can search public information using Brave Search. Only the general query is sent; your reports and history stay here.',
-                    ),
-                    const SizedBox(height: 12),
-                    TextField(
-                      enabled: !c.isPreview,
-                      controller: keyInput,
-                      obscureText: true,
-                      autocorrect: false,
-                      enableSuggestions: false,
-                      decoration: InputDecoration(
-                        labelText: 'Brave Search API key',
-                        hintText: c.webSearch.available
-                            ? 'A key is saved securely'
-                            : 'Paste your search key',
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-                    OutlinedButton(
-                      onPressed: c.busy
-                          ? null
-                          : c.isPreview
-                          ? null
-                          : () => c.setWebKey(keyInput.text),
-                      child: const Text('Save search key'),
-                    ),
-                  ],
+                  children: [WebSearchSettings(controller: c)],
                 ),
               ),
             ),

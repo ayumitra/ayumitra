@@ -513,6 +513,14 @@ Future<void> _exercise(AppController c) async {
       'answer cites fetched web evidence',
     );
     _require(
+      answer.web.any(
+        (s) =>
+            '${s.title} ${s.excerpt}'.toLowerCase().contains('iphone duo') &&
+            answer.text.contains('[${s.id}]'),
+      ),
+      'cited fetched source names the folding phone',
+    );
+    _require(
       answer.web.every(
         (s) =>
             s.retrievedAt.difference(DateTime.now().toUtc()).abs() <

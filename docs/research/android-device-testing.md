@@ -118,11 +118,17 @@ Current chat recall preserved the user-reported 13 g/dL and its provided date,
 while the older March 14 report query still returned 11.2 g/dL. These are
 synthetic correctness checks, not clinical accuracy or TPS measurements.
 
-The unit suite has 306 passing tests, including bounded report-structure repair,
+The unit suite has 314 passing tests, including bounded report-structure repair,
 automatic setup protocol checks, and profile-home navigation. Both controllers
 retain evidence/citation validation and never echo rejected drafts.
-Wake-word work remains parked. Live internet search still requires a configured
-Brave Search API key; a missing key is not a successful web-search test.
+Wake-word work remains parked. Live web search passed after the founder saved a Brave key directly in the
+S24 settings: a fresh process restored the credential, the local planner
+called the real public-search tool, and Gemma 4 answered iPhone Duo with
+fetched web references and current retrieval dates. The question did not
+provide the expected name. No credential or raw model output was logged.
+A follow-up fixes ambiguous save feedback: the settings screen labels the
+stored key without displaying it, rejects empty replacement saves, and
+confirms secure-storage readback before reporting success.
 
 An additional real-model check on the Android emulator (using the explicit
 Mac localhost bridge) passed current-user recall of 13 with its provided

@@ -51,13 +51,15 @@ class AppController extends ChangeNotifier {
     LocalIntelligence? intelligence,
     LocalEmbeddings? embeddings,
     WebSearch? webSearch,
+    FlutterSecureStorage? secureStorage,
   }) : intelligence = intelligence ?? LocalIntelligence(),
        embeddings = embeddings ?? LocalEmbeddings(),
-       webSearch = webSearch ?? WebSearch();
+       webSearch = webSearch ?? WebSearch(),
+       _secure = secureStorage ?? const FlutterSecureStorage();
   final LocalIntelligence intelligence;
   final LocalEmbeddings embeddings;
   final WebSearch webSearch;
-  final _secure = const FlutterSecureStorage();
+  final FlutterSecureStorage _secure;
   final _uuid = const Uuid();
   late EncryptedVault vault;
   late LocalParser parser;
@@ -1257,13 +1259,20 @@ class AppController extends ChangeNotifier {
     },
   );
 
-  Future<void> setWebKey(String value) => _work(
-    'Saving search settings…',
-    () async {
-      await _secure.write(key: 'ayumitra-web-search-key', value: value.trim());
-      webSearch.apiKey = value.trim();
-    },
-  );
+  Future<void> setWebKey(String value) =>
+      _work('Saving search settings…', () async {
+        final next = value.trim();
+        if (next.isEmpty) {
+          failure = webSearch.available
+              ? 'Enter a replacement key. Your saved key has been kept.'
+              : 'Enter a Brave Search API key before saving.';
+          return;
+        }
+        await _secure.write(key: 'ayumitra-web-search-key', value: next);
+        final saved = await _secure.read(key: 'ayumitra-web-search-key');
+        if (saved != next) throw StateError('Search settings did not persist.');
+        webSearch.apiKey = saved;
+      });
 
   Future<void> ask(
     String question,
