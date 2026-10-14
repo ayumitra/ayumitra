@@ -22,6 +22,8 @@
 	<string>$(FLUTTER_BUILD_NAME)</string>
 	<key>CFBundleSignature</key>
 	<string>????</string>
+	<key>NSFaceIDUsageDescription</key>
+	<string>Use Face ID to unlock your private Ayumitra health records when you enable app lock. Authentication stays with your device.</string>
 	<key>NSCameraUsageDescription</key>
 	<string>Ayumitra uses the camera only when you tap “Scan with camera”, to photograph a medical report into your on-device vault. Photos never leave this phone unless you explicitly share them.</string>
 	<key>NSPhotoLibraryUsageDescription</key>

@@ -1,0 +1,5 @@
+# Direct dependencies verified against PyPI on 2026-10-14; Python 3.10–3.14.
+# Install in a dedicated virtual environment, never into the app/runtime Python.
+litellm==1.105.1
+fastapi==0.143.0
+uvicorn==0.54.0

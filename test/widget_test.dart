@@ -12,7 +12,7 @@ void main() {
       await tester.pumpWidget(AyumitraApp(controller: controller));
       expect(find.text('Date of birth'), findsOneWidget);
       expect(find.text('Previous history (optional)'), findsOneWidget);
-      expect(find.textContaining('never uploads your reports'), findsOneWidget);
+      expect(find.textContaining('one-time privacy warning'), findsOneWidget);
       await tester.ensureVisible(find.text('Meet my companion'));
       await tester.tap(find.text('Meet my companion'));
       await tester.pump();

@@ -1,26 +1,29 @@
 # Ayumitra product brief
 
-Updated 13 October 2026. Implementation has started with a Flutter development prototype targeting Samsung S24 Ultra first. This separates the founder's vision from implementation recommendations and decisions still open.
+Updated 14 October 2026. Implementation has started with a Flutter development prototype targeting Samsung S24 Ultra first. This separates the founder's vision from implementation recommendations and decisions still open.
 
 ## Purpose
 
-Ayumitra is a personal medical companion with a lifelong memory. It should let someone speak or type naturally to add records, ask about their history, understand a report, track medicines, and prepare information to share. The project begins with a parent's needs for their child and aims to serve everyone.
+Ayumitra is a personal medical companion with a lifelong memory. It should let someone speak or type naturally to add records, ask about their history, understand a report, track medicines, and prepare information to share. The project begins with a parent's needs for their child and aims to serve everyone. It is designed as a companion for life across decades of owned context, with no app sign-in and no AyuMitra backend: records live on the user's devices and their own encrypted backups.
 
-Android and iOS are both target platforms. EmbeddingGemma 2 generates search embeddings on-device. Intelligence for organizing records, extracting information, and generating summaries also runs locally. Medical reports and personal history stay on the device unless the user explicitly shares or exports them.
+Android and iOS are both target platforms. EmbeddingGemma 2 generates search embeddings on-device. Intelligence for organizing records, extracting information, and generating summaries also runs locally. Medical reports and personal history stay on the device by default. Optional cloud chat can send questions and selected text context to OpenAI or Anthropic directly after one device-level privacy acknowledgment and an explicit model selection. Saving keys never enables automatic cloud inference; local import, embeddings, and ordinary chat remain local.
 
 ## Requested experience
 
 | Capability | Intended experience |
 | --- | --- |
 | First use | Ask for date of birth and optional previous history; the history seeds a visible first user turn and profile-scoped memory. English input/output in v1. |
-| Record import | Accept medical reports from files, scans, and photographs, preserving the originals. |
+| Record import | Accept medical reports from files, scans, and photographs, preserving originals; dedicated profile Files imports work independently of conversations, with up to five camera pages per report. |
 | Lifelong history | Build a history organized by clinical date, age at event, and category, with source-linked Markdown summaries. |
-| Search | Find records by meaning using EmbeddingGemma 2 locally. |
+| Search | Find records by meaning using EmbeddingGemma 2 locally, and retrieve reports by the dates named in a question. |
 | Local intelligence | Use one local LLM with separate system prompts for organizing, extraction, and summarization. |
 | Conversation | Use text and explicit microphone input as the main interface; wake-word development is parked. |
 | Image understanding | Interpret images; image-based diagnosis is part of the longer-term vision. |
 | Medicines | Track medicines being taken, answer information questions using internet sources, and maintain schedules. |
-| Sharing | Generate an anonymized report for the user to review and share. |
+| Readings | Track dated, user-reported SpO2, blood pressure, temperature, and pulse with latest values and recorded-point trends. |
+| Drafts | Generate health reports and requested messages locally from owned records and user-stated history, with editable review before sharing. |
+| Optional frontier | Choose a cloud model after a one-time privacy warning; Send uses that selected OpenAI or Anthropic provider directly without repeated popups. No automatic fallback or original-file attachments. |
+| Sharing | Generate an anonymized report for the user to review and share; reliable de-identification remains separate later work. |
 
 ## Recommended product behavior
 
@@ -28,17 +31,17 @@ Keep conversation central, with inline report viewers, result cards, schedule ca
 
 Let a user tap a cited finding to open the original page and highlight the supporting text or image region. Offer simple and detailed explanations without changing the underlying facts. Support imports from the camera, file picker, and another app's share sheet so users do not need to organize folders themselves.
 
-Show report processing states: saved, queued, processing, needs review, ready, and failed. Make extraction retryable and display which pages need attention. Provide a timeline ordered by clinical event date, with report-type filters; mark unknown dates rather than substituting the upload date.
+Show report processing states: saved, queued, processing, needs review, ready, and failed. Make extraction retryable and display which pages need attention. Provide a timeline ordered by clinical event date, with report-type filters; use source dates when available; otherwise label the current-day filing date as a fallback rather than a known clinical event date.
 
 For a child's profile, support a caregiver operating the app on the child's behalf. Support multiple family profiles and keep each person's records, conversations, memory, and searches isolated. New profiles record date of birth so age-at-event stays meaningful as the person grows; legacy age-only profiles retain their approximate reference rather than receiving an invented birth date. Mark the initial summary as user-provided history rather than a verified clinical report.
 
-Keep saved conversations within their owning profile. User-stated context may help recall earlier conversations, but assistant-generated replies must not become remembered clinical facts or tool authorization. Deleting a conversation removes its turns and associated memory; imported reports remain independently stored. Native history is encrypted. The browser client uses temporary tab memory with verified installed models on the same computer; reload clears its data. Use synthetic reports for evaluation. Public web research is currently disabled in the browser client.
+Keep saved conversations within their owning profile. User-stated context may help recall earlier conversations, but assistant-generated replies must not become remembered clinical facts or tool authorization. Deleting a conversation removes its turns, associated memory, and readings extracted from its user messages; manually entered measurements and imported reports remain independently stored. Native history is encrypted. The browser client uses temporary tab memory with verified installed models on the same computer; reload clears its data. Use synthetic reports for evaluation. Public web research is currently disabled in the browser client.
 
 Onboarding should also capture language preference and show model-download size and progress. Allow typing, saving reports, and keyword search over available extracted text while models download. Speech recognition must use a verified on-device path; if local speech is unavailable for a device or language, retain typed input instead of silently using a remote service.
 
 Preserve original reports as the source of truth. Camera capture supports up to five pages grouped as one encrypted original, with page-specific source references. Save the original before inference; preserve failed or interrupted jobs in a profile-owned queue with bounded retries. Android foreground protection supports processing while locked; the current retry checker runs while the app process is alive and resumes on reopening, rather than scheduling a new headless process after force-stop. Extract key report information and dates as flexible Markdown, retaining source report/page references, exact values and units. No fixed JSON fact schema is required from the model. Give files a sorting date from visible report content; when no usable date is visible, use the current calendar date and label it as a filing-date fallback. Let users correct extracted facts without editing the original. Keep user corrections, reported findings, and AI interpretations distinguishable.
 
-Generate Markdown notes and answers from original source rows, not solely from earlier AI summaries. Link factual claims to reports and say when supporting information is missing or contradictory. Separate clinical event dates from upload dates.
+Generate Markdown notes and answers from original source rows, not solely from earlier AI summaries. Link personal findings to their available reports, user statements, or recorded measurements and say when supporting information is missing or contradictory. General medical explanations may use the model’s own knowledge and corroborating public web sources; a missing report should not cause refusal to explain a condition or draft a history from user-reported information. Separate clinical event dates from upload dates. General advice should stay practical and sourced, show conflicts between sources, and escalate to urgent care when red flags fit; nothing here is a validated clinical claim.
 
 Treat image description, transcription of a radiology report, and diagnosing a condition from clinical images as separate capabilities. For the initial release, prioritize the first two. Diagnostic functionality needs its own clinician-led evaluation before it can be relied upon; choosing a vision-capable LLM does not establish diagnostic accuracy.
 
@@ -49,6 +52,24 @@ Extended thinking performs bounded public research with the same local model: at
 Call an export a de-identified draft until reviewed. Remove identifiers from text, images, filenames, and metadata, including text burned into scanned pages. Offer a preview before sharing. Do not promise irreversible anonymity: dates and unusual medical histories can still identify someone.
 
 Redaction must remove the underlying content from the exported file, including hidden PDF text and embedded originals. Visual blurring or covering text alone is insufficient. Preserve a local record of the export's source reports and user review without logging medical content to analytics.
+
+## Current answer, reading, and frontier behavior
+
+The dedicated profile Files screen imports originals without adding chat turns. Questions can retrieve owned reports by source dates, and health-report or draft requests use the available report evidence, dated user statements, profile background and readings. The assistant should distinguish those sources instead of refusing simply because an uploaded report is absent. Editable drafts are generated locally, and late results cannot replace an edited draft or move between profiles or conversations. The second-opinion copy/open flow still requires review and never submits a message to another application.
+
+Key metrics cover SpO2, blood pressure (both values), temperature, and pulse. The app records measurement timestamps, accepts explicit readings from chat as user-reported observations, and shows latest readings and trends over recorded points. These displays do not establish a diagnosis. Deleting a session also removes readings derived from that session; manual measurements remain. Switching profiles cannot silently retarget an unfinished measurement form.
+
+Optional frontier settings need only a provider API key stored in platform secure storage, with provider/model selection; mobile users do not configure a gateway URL or run a Python server. The app contacts OpenAI or Anthropic directly. Defaults are `gpt-6-luna` for OpenAI and `claude-haiku-5-5` for Anthropic, with an editable model id. The chat model chooser starts with Local and can switch to the configured cloud provider/model. The first cloud selection shows a privacy warning, then persists its acknowledgment on the device. While cloud is selected, Send sends the question and selected text context directly; there is no confirmation popup before each message. The current model and local/cloud privacy state remain visible, and the user can switch back to Local. The provider receives the API key and selected text. Original files and images are not attached. Provider retention policies and charges apply, and saving a key or a local-model failure cannot trigger cloud access. The optional [LiteLLM service](../gateway/README.md) remains separate development tooling and is not required for normal mobile setup.
+
+Answer, draft, and report-note validation permits up to ten total generation attempts, including the initial response, with controlled format guidance. A frontier request can therefore incur up to ten provider charges; the one-time privacy disclosure explains the bound. Each attempt uses the same question/context snapshot and selected model. Transport/provider errors stop immediately; no fallback provider or additional hidden context is introduced. The independent tool-plan loop remains bounded at three attempts.
+
+This round implements and tests these paths with synthetic data and mocked provider calls. Live frontier-account availability, new physical-device extraction quality, and clinical accuracy are not established by these changes.
+
+## Curated medical knowledge banks (long-term vision)
+
+Reference knowledge (conditions, medicines, growth norms, urgent-care red flags) should eventually ship as versioned, offline-capable banks curated for the app and stored separately from any person's vault. Each entry needs provenance: source, citations, content age and last-reviewed date, applicable jurisdiction, license, and clinical-reviewer sign-off, with unreviewed or expired content labelled as such and never presented as validated guidance. Banks arrive as signed data updates; the companion cites their entries like any other source and shows conflicts explicitly. There is no app account and no central vault backup by default; records survive through user-owned encrypted backups.
+
+Zero-data-retention holds only where the provider account or organization is approved for it under that provider's terms. Request flags such as `store:false` are not a ZDR guarantee, and the app must never present them as one; saving a key cannot certify anything about provider-side retention. See `docs/research/cloud-data-retention.md` (internal research agent).
 
 ## Proposed architecture
 
@@ -63,9 +84,9 @@ Record vault  Import pipeline      Medicine tools
    |          |                    |
    |     OCR / visual reading      Schedules + OS notifications
    |          |
-   |     Extractor prompt -> validated structured facts
+   |     Extractor prompt -> source-linked Markdown
    |          |
-   +---- Local facts + keyword index + vector index
+   +---- Local notes/readings + keyword index + vector index
                          |
                   Source retrieval
                          |
@@ -73,13 +94,14 @@ Record vault  Import pipeline      Medicine tools
                          |
                  Answer with report links
 
-Explicit network boundary: agent-invoked public web search and optional model distribution.
+Explicit network boundary: agent-invoked public web search, model distribution,
+and direct provider text requests in an explicitly selected cloud chat mode.
 Android automatically downloads and verifies the fixed public Gemma 4 E2B and
 EmbeddingGemma 2 Text 270M weights; iOS currently imports model files locally.
-Embeddings, record retrieval, extraction, and summaries run on-device.
+Embeddings, record retrieval, extraction, and default summaries run on-device.
 ```
 
-Use one local model runtime with independent prompt roles and contexts: organizer, extractor, summarizer, and action planner. Validate structured outputs in application code. Give the planner bounded tools for record search, medicine tracking, schedule changes, and export preparation. Treat report contents and web pages as data, not instructions that can authorize tool calls.
+Use one local model runtime with independent prompt roles and contexts: organizer, extractor, summarizer, and action planner. Validate tool plans, ownership and citations in application code; report extraction itself is flexible Markdown rather than a required fact schema. Give the planner bounded tools for record search, medicine tracking, schedule changes, and export preparation. Treat report contents and web pages as data, not instructions that can authorize tool calls.
 
 | Prompt role | Responsibility | Application enforcement |
 | --- | --- | --- |
@@ -90,7 +112,7 @@ Use one local model runtime with independent prompt roles and contexts: organize
 
 Model-reported confidence can help prioritize review, but must not be presented as a calibrated probability of medical correctness.
 
-The vault should include encrypted original files, a local structured database, and rebuildable search indexes. Protect encryption keys using platform secure storage. Deleting a profile removes its reports, originals, conversations, derived memory, exports and pending jobs. Persist logical erasure before filesystem cleanup, with durable cleanup markers for interrupted deletion. Keep health content out of ordinary logs and analytics. Add an explicit encrypted backup/restore path: a lifelong record must survive a lost or replaced phone. Track model and prompt versions so extractions can be regenerated while preserving user corrections.
+The vault should include encrypted original files, a local structured database, and rebuildable search indexes. Protect encryption keys using platform secure storage. Deleting a profile removes its reports, originals, conversations, derived memory, all readings, exports and pending jobs. Persist logical erasure before filesystem cleanup, with durable cleanup markers for interrupted deletion. Keep health content out of ordinary logs and analytics. Add an explicit encrypted backup/restore path: a lifelong record must survive a lost or replaced phone. Track model and prompt versions so extractions can be regenerated while preserving user corrections.
 
 For numerical questions, retrieve structured results with date and unit filters; combine keyword and semantic search for narrative questions. Store the embedding model/version and dimension with each index. Provider changes require reindexing; vectors from different models must not be mixed.
 
@@ -109,6 +131,7 @@ Adapted from [IDEA.md](../IDEA.md); this is a conceptual structure, not a select
 | Search chunk | Profile, report, page/region, extracted text, embedding model/version/dimension, vector, index status. |
 | Medicine | Profile, prescribed name/strength/dose/route/frequency, date range, source report, active state. |
 | Reminder and dose event | Medicine, schedule, timezone, due occurrence, and separately recorded user-confirmed taken/skipped events. |
+| Reading | Profile, measurement kind/value/unit, measured-at timestamp, optional note and user/report provenance; chat-derived readings retain their source message relationship. |
 | Export | Profile, selected reports, redaction/review state, creation date. |
 
 Enforce profile ownership across files, facts, keyword results, vectors, medicine tools, and exports. Preserve relationships so a source cannot accidentally be attached to another person's record. Do not infer that a medicine was taken merely because its reminder was delivered.
@@ -129,7 +152,7 @@ Checked on 12 October 2026:
 - **Self-hosted LlamaParse: does not satisfy the phone-only requirement.** The documented Enterprise deployment runs on Kubernetes and uses external model APIs, including OpenAI, Anthropic, or Google. Source: [self-hosting documentation](https://developers.llamaindex.ai/llamaparse/self_hosting/).
 - **LiteParse: candidate for a local parser trial.** This separate open-source project provides local PDF parsing, bounding boxes, and bundled Tesseract OCR. Its documented platforms are Linux, macOS, and Windows; Android/iOS packaging and resource use are unverified here. Any trial must use local OCR, bundle the required assets, disable external OCR endpoints, and avoid cloud fallback. Source: [LiteParse repository](https://github.com/run-llama/liteparse).
 
-The proposed import path remains local text/layout extraction for digital PDFs, local OCR for scans, and a local model for structured medical facts. Evaluate parser correctness on lab tables, units, reference ranges, and source coordinates before selecting a library.
+The import path uses local text/layout extraction for digital PDFs and the local vision model for scans, followed by source-linked Markdown notes with flexible key information and dates. Evaluate parser correctness on lab tables, units, reference ranges, and source coordinates before selecting a library.
 
 ## Delivery sequence
 
@@ -139,6 +162,7 @@ The proposed import path remains local text/layout extraction for digital PDFs, 
 4. **Make records portable:** reviewed de-identified exports, encrypted backup/restore, and caregiver/profile flows.
 5. **Expand after evaluation:** broader document formats, longitudinal comparisons, wake-word integrations, and separately validated clinical image capabilities.
 6. **Develop Ayumitra edge models:** begin the POC with existing Gemma 4 and EmbeddingGemma 2 weights. After the core flow and device benchmarks are established, develop our own fine-tuned models for on-device organization, extraction, tool use, and grounded summaries; evaluate edge memory, latency, numerical fidelity, citations, and failure behavior before replacing the baseline. Fine-tuning is a future development milestone, not a requirement to start the app or a cloud inference fallback. Private user records are not training data by default.
+7. **Curate offline medical knowledge banks:** versioned banks with provenance, citations, review dates, jurisdiction, and licensing; wire citation and conflict display into answers.
 
 The feasibility result should record model storage, peak memory, import time, answer latency, thermal behavior, extraction accuracy, retrieval recall, and unsupported summary claims on a fixed synthetic evaluation set. Declare target thresholds and devices before selecting the framework. Frameworks and libraries proposed in IDEA.md remain candidates until their mobile integration has been verified; its suggested week estimates are not delivery commitments.
 
@@ -162,5 +186,6 @@ Later medicine and export milestones add their own checks: a real OS reminder an
 - English conversation and report reading are fixed for v1; additional languages are deferred.
 - Flutter is the initial framework; native inference/search integration and real-phone performance require verification.
 - Several family profiles, date-of-birth onboarding, and saved profile-scoped conversations are established requirements.
+- Knowledge-bank curation is open: sources, clinical reviewers, jurisdictions, licenses, and update cadence.
 
 EmbeddingGemma 2, on-device processing, English v1, and autonomous web-search tool use are established requirements. The first Flutter development slice implements the record vault, import/extraction pipeline, bounded agent routing, Markdown answers, and setup. Local LLM/model variants, real-phone quality/performance, and remaining voice/medicine/sharing/backup milestones are not validated or complete.

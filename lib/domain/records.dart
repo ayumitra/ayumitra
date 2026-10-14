@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'conversations.dart';
+import 'vitals.dart';
 
 typedef Json = Map<String, dynamic>;
 
@@ -274,7 +275,13 @@ String ageAtEvent(Profile profile, DateTime? event) {
   if (event == null) return 'Age at event unknown';
   final dob = profile.dateOfBirth;
   if (dob != null) {
-    if (event.isBefore(dob)) return 'Age at event unknown';
+    if (DateTime.utc(
+      event.year,
+      event.month,
+      event.day,
+    ).isBefore(DateTime.utc(dob.year, dob.month, dob.day))) {
+      return 'Age at event unknown';
+    }
     var totalMonths = (event.year - dob.year) * 12 + (event.month - dob.month);
     if (event.day < dob.day) totalMonths -= 1;
     if (totalMonths < 0) return 'Age at event unknown';
@@ -290,6 +297,46 @@ String ageAtEvent(Profile profile, DateTime? event) {
   // explicitly approximate label; never turn it into an inferred birth date.
   final estimated = age + .5 + elapsed;
   if (estimated < 0) return 'Age at event unknown';
+  return 'About age ${estimated.floor()}';
+}
+
+/// Automatic current-age reference computed locally from the profile DOB,
+/// for model interpretation (age-appropriate ranges) and UI. The label is
+/// human-readable companion to the DOB and exact-age metadata. Pediatric precision
+/// under 2 years (years + months); whole years above. Legacy integer-age
+/// profiles yield an explicitly approximate label, exactly like [ageAtEvent].
+String currentAgeLabel(Profile profile, {DateTime? now}) {
+  final today = now ?? DateTime.now();
+  final day = DateTime.utc(today.year, today.month, today.day);
+  final dob = profile.dateOfBirth;
+  if (dob != null) {
+    final birth = DateTime.utc(dob.year, dob.month, dob.day);
+    if (birth.isAfter(day)) return 'Age unknown';
+    var months = (day.year - birth.year) * 12 + (day.month - birth.month);
+    if (day.day < birth.day) months -= 1;
+    if (months < 0) return 'Age unknown';
+    if (months < 24) {
+      final years = months ~/ 12;
+      final rest = months % 12;
+      String aged(int value, String one, String many) =>
+          '$value ${value == 1 ? one : many}';
+      if (years == 0) return 'Age ${aged(rest, 'month', 'months')}';
+      return 'Age ${aged(years, 'year', 'years')}, ${aged(rest, 'month', 'months')}';
+    }
+    return 'Age ${months ~/ 12}';
+  }
+  final recordedAt = profile.ageRecordedAt;
+  final age = profile.age;
+  if (recordedAt == null || age == null) return 'Age unknown';
+  final elapsed =
+      day
+          .difference(
+            DateTime.utc(recordedAt.year, recordedAt.month, recordedAt.day),
+          )
+          .inDays /
+      365.2425;
+  final estimated = age + .5 + elapsed;
+  if (estimated < 0) return 'Age unknown';
   return 'About age ${estimated.floor()}';
 }
 
@@ -405,6 +452,7 @@ class VaultData {
     this.exports = const [],
     this.deletedProfileIds = const [],
     this.processingJobs = const [],
+    this.vitals = const [],
     this.modelPath,
     this.modelType = 'gemma4',
     this.embeddingPath,
@@ -422,6 +470,10 @@ class VaultData {
   // Durably queued original-file erasure, retried after interrupted deletion.
   final List<String> deletedProfileIds;
   final List<ReportProcessingJob> processingJobs;
+  // Local key-metric readings (SpO2, blood pressure, temperature, pulse,
+  // height, weight) owned by profile. Trend views read newest-first via
+  // [vitalsFor].
+  final List<VitalEntry> vitals;
   final String? modelPath, embeddingPath, embeddingVersion;
   final String modelType;
   final String? activeProfileId, activeSessionId;
@@ -436,6 +488,7 @@ class VaultData {
     List<SecondOpinionAudit>? exports,
     List<String>? deletedProfileIds,
     List<ReportProcessingJob>? processingJobs,
+    List<VitalEntry>? vitals,
     String? modelPath,
     String? modelType,
     String? embeddingPath,
@@ -453,6 +506,7 @@ class VaultData {
     exports: exports ?? this.exports,
     deletedProfileIds: deletedProfileIds ?? this.deletedProfileIds,
     processingJobs: processingJobs ?? this.processingJobs,
+    vitals: vitals ?? this.vitals,
     modelPath: modelPath ?? this.modelPath,
     modelType: modelType ?? this.modelType,
     embeddingPath: embeddingPath ?? this.embeddingPath,
@@ -475,6 +529,7 @@ class VaultData {
     'exports': exports.map((x) => x.toJson()).toList(),
     'deletedProfileIds': deletedProfileIds,
     'processingJobs': processingJobs.map((job) => job.toJson()).toList(),
+    'vitals': vitals.map((v) => v.toJson()).toList(),
     'modelPath': modelPath,
     'modelType': modelType,
     'embeddingPath': embeddingPath,
@@ -514,6 +569,9 @@ class VaultData {
           .toList(),
       processingJobs: (j['processingJobs'] as List? ?? [])
           .map((value) => ReportProcessingJob.fromJson(Json.from(value)))
+          .toList(),
+      vitals: (j['vitals'] as List? ?? [])
+          .map((value) => VitalEntry.fromJson(VitalJson.from(value)))
           .toList(),
       modelPath: j['modelPath'],
       modelType: j['modelType'] ?? 'gemma4',

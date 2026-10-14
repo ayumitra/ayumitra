@@ -53,7 +53,7 @@ class LocalResearch {
     }
 
     for (var round = 0; round < 3; round++) {
-      status?.call('Planning public research on this phone (${round + 1}/3)…');
+      status?.call('Planning public research (${round + 1}/3)…');
       final List<_ResearchAction> actions;
       try {
         actions = _actions(
@@ -71,13 +71,13 @@ class LocalResearch {
         );
       } catch (_) {
         notice(
-          'The research plan could not be validated locally. Collected sources were kept.',
+          'The research plan could not be validated. Collected sources were kept.',
         );
         break;
       }
       if (!searchAvailable) {
         notice(
-          'Web search is unavailable. Research stayed local; no cloud AI fallback was used.',
+          'Web search is unavailable. No search results were obtained; no fallback model was used.',
         );
         break;
       }
@@ -119,13 +119,13 @@ class LocalResearch {
           }
         } catch (_) {
           notice(
-            'A public search could not complete. Collected sources were kept; no cloud AI fallback was used.',
+            'A public search could not complete. Collected sources were kept; no fallback model was used.',
           );
         }
       }
       if (!attempted || !received || round == 2 || calls >= 6) break;
 
-      status?.call('Assessing research evidence on this phone…');
+      status?.call('Assessing research evidence…');
       try {
         final proposed = _topics(
           await generate(
@@ -163,7 +163,7 @@ class LocalResearch {
         if (missingTopics.isEmpty) break;
       } catch (_) {
         notice(
-          'Research evidence could not be assessed locally. Collected sources were kept.',
+          'Research evidence could not be assessed. Collected sources were kept.',
         );
         break;
       }
@@ -235,7 +235,7 @@ String _bounded(String text, int length) =>
     text.length <= length ? text : text.substring(0, length);
 
 const researchPlannerPrompt =
-    '''You plan bounded public research using the local model. English JSON only.
+    '''You plan bounded public research using the selected assistant model. English JSON only.
 Return exactly {"actions":[{"action":"web_search","query":"short generic public query"}]}.
 At most two web_search actions per round. Or return {"actions":[{"action":"finish"}]}.
 Choose finish when sufficient information is collected, search is unavailable, or no safe useful query remains.

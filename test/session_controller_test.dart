@@ -514,7 +514,7 @@ void main() {
         await local.createProfile('Synthetic B', DateTime(2010), '', true);
         recall.plan = '{"action":"conversation","query":""}';
         final callsBeforeOtherProfile = recall.answerInputs.length;
-        await local.ask('What about zephyrin?');
+        await local.ask('What did I note about zephyrin?');
         expect(recall.answerInputs.length, callsBeforeOtherProfile);
         expect(
           local.messages.last.text,

@@ -1,5 +1,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android" xmlns:tools="http://schemas.android.com/tools">
     <uses-permission android:name="android.permission.INTERNET"/>
+    <!-- Optional app lock invokes only the device authentication UI. -->
+    <uses-permission android:name="android.permission.USE_BIOMETRIC"/>
     <!-- Foreground dataSync processing for user-initiated local work only.
          No background starts, no boot receiver. POST_NOTIFICATIONS is
          declared but never requested. Without a grant Android shows the service

@@ -25,11 +25,14 @@ class SecondOpinionScreen extends StatefulWidget {
 class _SecondOpinionScreenState extends State<SecondOpinionScreen> {
   AppController get c => widget.controller;
   late final TextEditingController text;
-  late final SecondOpinionPack pack;
+  late SecondOpinionPack pack;
   late final Profile owner;
   bool reviewed = false;
   String? error, status;
   bool pending = false;
+  bool generating = false;
+  int _editRevision = 0;
+  int _generation = 0;
 
   @override
   void initState() {
@@ -37,12 +40,94 @@ class _SecondOpinionScreenState extends State<SecondOpinionScreen> {
     owner = c.profile!;
     pack = c.secondOpinionPack();
     text = TextEditingController(text: pack.markdown);
+    c.addListener(_controllerChanged);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && _editRevision == 0 && c.selectedAssistantAvailable) {
+        _generate();
+      }
+    });
   }
 
   @override
   void dispose() {
+    _generation++;
+    c.removeListener(_controllerChanged);
     text.dispose();
     super.dispose();
+  }
+
+  void _controllerChanged() {
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _generate() async {
+    if (generating ||
+        pending ||
+        c.busy ||
+        !scopeMatches ||
+        !c.selectedAssistantAvailable) {
+      return;
+    }
+    final generation = ++_generation;
+    final revision = _editRevision;
+    final profileId = pack.profileId;
+    final sessionId = pack.sessionId;
+    setState(() {
+      generating = true;
+      reviewed = false;
+      error = null;
+      status = null;
+    });
+    try {
+      final generated = await c.generateSecondOpinionDraft();
+      if (!mounted || generation != _generation) return;
+      if (!scopeMatches ||
+          c.profile?.id != profileId ||
+          c.activeSession?.id != sessionId) {
+        setState(
+          () => error =
+              'The active profile or conversation changed. Return and rebuild this draft.',
+        );
+        return;
+      }
+      if (revision != _editRevision) {
+        setState(
+          () => status =
+              'Your edits were kept. Generate again if you want to replace this draft.',
+        );
+        return;
+      }
+      if (generated == null ||
+          generated.profileId != profileId ||
+          generated.sessionId != sessionId ||
+          generated.reportIds.any(
+            (id) => !c.data.reports.any(
+              (r) => r.id == id && r.profileId == profileId,
+            ),
+          )) {
+        setState(
+          () => status =
+              'The selected model could not finish the draft. Your editable source draft is still available.',
+        );
+        return;
+      }
+      setState(() {
+        pack = generated;
+        text.text = generated.markdown;
+        status = 'Draft generated. Review and edit it before sharing.';
+      });
+    } catch (_) {
+      if (mounted && generation == _generation) {
+        setState(
+          () => status =
+              'The selected model could not finish the draft. Your editable source draft is still available.',
+        );
+      }
+    } finally {
+      if (mounted && generation == _generation) {
+        setState(() => generating = false);
+      }
+    }
   }
 
   bool get scopeMatches =>
@@ -65,7 +150,7 @@ class _SecondOpinionScreenState extends State<SecondOpinionScreen> {
   }
 
   Future<void> _act({String? target, Uri? url}) async {
-    if (pending) {
+    if (pending || generating) {
       return;
     }
     if (!reviewed || text.text.trim().isEmpty) {
@@ -179,6 +264,35 @@ class _SecondOpinionScreenState extends State<SecondOpinionScreen> {
               'This text-only draft is not anonymized and may contain identifying details. No photos or attachments are included. Review and edit it before copying. Clipboard contents may be available to other apps or synced by your device. Opening ChatGPT or Claude opens only its homepage; you decide whether to paste and send there. Ayumitra does not submit the draft.',
             ),
             const SizedBox(height: 8),
+            if (generating)
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 12),
+                child: Row(
+                  children: [
+                    SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    ),
+                    SizedBox(width: 12),
+                    Expanded(
+                      child: Text('Preparing your draft with the local model…'),
+                    ),
+                  ],
+                ),
+              ),
+            if (c.selectedAssistantAvailable)
+              OutlinedButton.icon(
+                onPressed: generating || pending || c.busy || !scopeMatches
+                    ? null
+                    : _generate,
+                icon: const Icon(Icons.auto_awesome_outlined),
+                label: const Text('Regenerate draft'),
+              ),
+            if (!scopeMatches)
+              const Text(
+                'The profile, conversation, or source records changed. Return and rebuild this draft.',
+              ),
             if (hints.isNotEmpty)
               Text(
                 'Possible identifiers: ${hints.join(', ')}. These checks are incomplete; review all text.',
@@ -195,6 +309,7 @@ class _SecondOpinionScreenState extends State<SecondOpinionScreen> {
               minLines: 10,
               maxLines: 18,
               onChanged: (_) => setState(() {
+                _editRevision++;
                 reviewed = false;
                 error = null;
                 status = null;
@@ -210,7 +325,7 @@ class _SecondOpinionScreenState extends State<SecondOpinionScreen> {
                 'I reviewed this text and choose to copy/share it',
               ),
               value: reviewed,
-              onChanged: pending
+              onChanged: pending || generating || !scopeMatches
                   ? null
                   : (v) => setState(() => reviewed = v ?? false),
             ),
@@ -222,7 +337,9 @@ class _SecondOpinionScreenState extends State<SecondOpinionScreen> {
             if (status != null) Text(status!),
             const SizedBox(height: 12),
             FilledButton.icon(
-              onPressed: pending ? null : () => _act(),
+              onPressed: pending || generating || !scopeMatches
+                  ? null
+                  : () => _act(),
               icon: const Icon(Icons.copy_outlined),
               label: Text(pending ? 'Working…' : 'Copy draft'),
             ),
@@ -231,7 +348,7 @@ class _SecondOpinionScreenState extends State<SecondOpinionScreen> {
               children: [
                 Expanded(
                   child: OutlinedButton.icon(
-                    onPressed: pending
+                    onPressed: pending || generating || !scopeMatches
                         ? null
                         : () => _act(
                             target: 'chatgpt',
@@ -244,7 +361,7 @@ class _SecondOpinionScreenState extends State<SecondOpinionScreen> {
                 const SizedBox(width: 12),
                 Expanded(
                   child: OutlinedButton.icon(
-                    onPressed: pending
+                    onPressed: pending || generating || !scopeMatches
                         ? null
                         : () => _act(
                             target: 'claude',

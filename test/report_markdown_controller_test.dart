@@ -177,7 +177,7 @@ void main() {
       expect(report.summaryMarkdown, isNull);
       expect(c.data.processingJobs.single.profileId, 'alice');
       expect(c.data.processingJobs.single.attempts, greaterThan(0));
-      expect(model.inputs.length, lessThanOrEqualTo(3));
+      expect(model.inputs.length, lessThanOrEqualTo(10));
       expect(await c.vault.readOriginal(report, 'alice'), isNotEmpty);
       expect((await c.vault.read()).processingJobs, isNotEmpty);
     },

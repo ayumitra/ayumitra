@@ -28,6 +28,7 @@ VaultData withoutProfile(
     processingJobs: data.processingJobs
         .where((job) => job.profileId != id)
         .toList(),
+    vitals: data.vitals.where((vital) => vital.profileId != id).toList(),
     activeSessionByProfile: selections,
     deletedProfileIds: queueFileDeletion
         ? {...data.deletedProfileIds, id}.toList()

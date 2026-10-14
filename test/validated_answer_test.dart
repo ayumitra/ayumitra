@@ -65,15 +65,26 @@ void main() {
 
     expect(answer, 'Value was 13 [S1].');
     expect(model.calls, 2);
-    expect(statuses, ['Repair answer format (2/3)…']);
+    expect(statuses, ['Repair answer format (2/10)…']);
     final repair = model.inputs[1]['payload'] as Map<String, dynamic>;
     expect(repair.containsKey('outputRepair'), true);
     // The rejected reply is never echoed back into model input.
     expect(jsonEncode(model.inputs[1]), isNot(contains('MISSING')));
   });
 
-  test('three invalid replies return null after exactly three calls', () async {
-    final model = _ScriptedGenerate(['bad one', 'bad two', 'bad three']);
+  test('ten invalid replies return null after exactly ten calls', () async {
+    final model = _ScriptedGenerate([
+      'bad one',
+      'bad two',
+      'bad three',
+      'bad four',
+      'bad five',
+      'bad six',
+      'bad seven',
+      'bad eight',
+      'bad nine',
+      'bad ten',
+    ]);
     final answer = await generateValidatedAnswer(
       generate: model.call,
       instruction: 'answer',
@@ -82,7 +93,7 @@ void main() {
     );
 
     expect(answer, isNull);
-    expect(model.calls, 3);
+    expect(model.calls, 10);
   });
 
   test('rejected output never appears in any repair input', () async {
@@ -115,7 +126,7 @@ void main() {
       },
     };
     final before = jsonEncode(payload);
-    final model = _ScriptedGenerate(['no', 'no', 'no']);
+    final model = _ScriptedGenerate(List.filled(10, 'no'));
     await generateValidatedAnswer(
       generate: model.call,
       instruction: 'answer',
@@ -181,9 +192,9 @@ void main() {
   });
 
   test(
-    'cap with hint returns null after three evidence-carrying calls',
+    'cap with hint returns null after ten evidence-carrying calls',
     () async {
-      final model = _ScriptedGenerate(['bad one', 'bad two', 'bad three']);
+      final model = _ScriptedGenerate(List.filled(10, 'bad'));
       final answer = await generateValidatedAnswer(
         generate: model.call,
         instruction: 'summarize',
@@ -193,7 +204,7 @@ void main() {
       );
 
       expect(answer, isNull);
-      expect(model.calls, 3);
+      expect(model.calls, 10);
       for (final input in model.inputs) {
         final payload = input['payload'] as Map<String, dynamic>;
         expect(payload['evidence'], _payload()['evidence']);

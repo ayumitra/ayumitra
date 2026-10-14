@@ -104,12 +104,12 @@ void main() {
     },
   );
 
-  test('cap returns null after three attempts', () async {
+  test('cap returns null after ten attempts', () async {
     final model = _StubIntelligence(['bad one', 'bad two', 'bad three']);
     final markdown = await generateReportMarkdown(model, _report(), _owner());
 
     expect(markdown, isNull);
-    expect(model.calls, 3);
+    expect(model.calls, 10);
   });
 
   test('blank output is rejected and retried', () async {
@@ -293,7 +293,7 @@ void main() {
   );
 
   test(
-    'one failed batch hits its three-attempt cap and discards the whole draft',
+    'one failed batch hits its ten-attempt cap and discards the whole draft',
     () async {
       String? firstBatchText;
       final model = _BatchIntelligence((payload, call) {
@@ -310,7 +310,7 @@ void main() {
       );
 
       expect(markdown, isNull);
-      expect(model.calls, 4);
+      expect(model.calls, 11);
       expect(
         model.payloads
             .skip(1)

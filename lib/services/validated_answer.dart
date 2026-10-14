@@ -1,11 +1,22 @@
 import 'dart:convert';
+import 'assistant_markdown.dart';
+
+/// Supplied evidence is accessible even when original files are not attached.
+/// A source tag cannot make an access-refusal a useful, grounded answer.
+bool claimsNoContextAccess(String output) {
+  final text = output.replaceAll(RegExp('[‘’]'), "'");
+  return RegExp(
+    r"\b(?:can't|cannot|don't|doesn't|do not|does not|did not|unable to)\s+(?:have\s+)?access\b|\b(?:have|has|had)\s+no\s+access\b|\bno\s+access\s+to\b|\bwithout\s+access\s+to\b",
+    caseSensitive: false,
+  ).hasMatch(text);
+}
 
 /// Concise repair guidance for report-summary calls: citation shape, exact
 /// numbers/dates, and report grounding only. Passed as `repairHint` by the
 /// report-summary callsites; the default answer-shaped repair below stays
 /// for chat answers.
 const reportSummaryRepairHint =
-    'The previous draft was rejected. Every factual claim requires an EXACT '
+    'The previous draft was rejected. Supplied evidence and user history are accessible: use them directly rather than claiming no access. Every factual claim requires an EXACT '
     'supplied sourceId in its own square tags, with separate tags such as '
     '[S1] [S2] — never combined tags like [S1, S2], never unknown or invented '
     'IDs, no JSON, and no placeholder citations. Preserve exact numbers, units, '
@@ -21,9 +32,10 @@ const _answerRepairGuidance =
     'value. Use currentSessionUserContext for the latest observation '
     'and its providedAt date. Without a matching report, ask whether '
     'the user has one. Return concise Markdown, with each source tag '
-    'separate; no JSON or invented references.';
+    'separate; no JSON or invented references. Use plain-text values and units; no LaTeX commands, boxed answers, dollar math delimiters or escaped newlines.';
 
-/// Generates and strictly validates at most three natural-language answers.
+/// Generates and strictly validates up to ten natural-language answers
+/// (human request: small local models often need several format repairs).
 ///
 /// Repair feedback is controlled citation/structure guidance only; a rejected
 /// answer is never echoed back into the model input. Generation and network
@@ -42,32 +54,39 @@ Future<String?> generateValidatedAnswer({
   required bool Function(String output) validate,
   void Function(String)? status,
   String? repairHint,
+  int maxAttempts = 10,
 }) async {
-  for (var attempt = 1; attempt <= 3; attempt++) {
-    if (attempt > 1) status?.call('Repair answer format ($attempt/3)…');
+  for (var attempt = 1; attempt <= maxAttempts; attempt++) {
+    if (attempt > 1) {
+      status?.call('Repair answer format ($attempt/$maxAttempts)…');
+    }
     final attemptPayload = attempt == 1
         ? payload
         : {
             ...payload,
             'outputRepair': {
+              'markdownRequirement':
+                  'Use readable Markdown and plain-text values and units. No LaTeX commands, boxed answers, dollar math delimiters, JSON containers or escaped newline text. Preserve exact digits, units and supplied reference tags.',
               'validationFailure':
-                  'The previous response failed strict citation validation and was discarded.',
+                  'The previous response failed Markdown or citation validation and was discarded.',
               'instruction':
+                  repairHint ??
                   'Every factual claim requires an EXACT supplied sourceId in its own square tags, '
-                  'with separate tags such as [S1] [S2] — never combined tags like [S1, S2], '
-                  'never unknown or invented IDs, no JSON, and no placeholder citations. '
-                  'Restate only supported facts in clean Markdown and drop any unsupported claim. '
-                  'Use only sourceIds supplied in this payload.',
+                      'with separate tags such as [S1] [S2] — never combined tags like [S1, S2], '
+                      'never unknown or invented IDs, no JSON, and no placeholder citations. '
+                      'Restate only supported facts in clean Markdown and drop any unsupported claim. '
+                      'Use only sourceIds supplied in this payload.',
             },
           };
     final repairInstruction = attempt == 1
         ? instruction
-        : '$instruction\n\nOUTPUT REPAIR: ${repairHint ?? _answerRepairGuidance}';
-    final output = await generate(
-      repairInstruction,
-      jsonEncode(attemptPayload),
+        : '$instruction\n\nOUTPUT REPAIR: ${repairHint ?? _answerRepairGuidance} Use plain-text values and units, without LaTeX commands, boxed answers, dollar math delimiters, JSON containers or escaped newline text.';
+    final output = normalizeAssistantMarkdown(
+      await generate(repairInstruction, jsonEncode(attemptPayload)),
     );
-    if (validate(output)) return output;
+    if (!hasUnsupportedAssistantFormatting(output) && validate(output)) {
+      return output;
+    }
   }
   return null;
 }

@@ -17,8 +17,13 @@ import 'profiles_screen.dart';
 import 'profile_files_screen.dart';
 import 'profile_home_screen.dart';
 import 'web_search_settings.dart';
+import 'frontier_settings.dart';
+import 'vitals_screen.dart';
+import '../domain/frontier_models.dart';
+import '../services/assistant_markdown.dart';
 import 'camera_pages_dialog.dart';
 import 'second_opinion_screen.dart';
+import 'security_settings_screen.dart';
 
 const ink = Color(0xff203f38);
 const canvas = Color(0xfff7f8f2);
@@ -365,7 +370,7 @@ class _OnboardingState extends State<Onboarding> {
                               ? 'Add your own documents below. Everything stays in this tab’s memory and clears on reload; intelligence comes only from your localhost model server.'
                               : isEmulatorBridge(widget.controller)
                               ? 'Development testing only — this is not on-device inference. Your records stay encrypted on this Android device; the assistant’s models run on your Mac through a USB/emulator localhost bridge. No cloud.'
-                              : 'Your records and AI stay on this phone. The assistant can search public web information; it never uploads your reports.',
+                              : 'Your records and ordinary AI answers stay on this phone. Optional cloud chat sends your questions and selected health context after a one-time privacy warning and your model choice. Original files are not attached.',
                           style: const TextStyle(fontSize: 13, height: 1.5),
                         ),
                       ),
@@ -422,6 +427,7 @@ class CompanionScreen extends StatefulWidget {
 class _CompanionScreenState extends State<CompanionScreen> with RouteAware {
   final input = TextEditingController();
   int section = 0;
+  bool _changingChatModel = false;
   String? category;
   String? selectedAge;
   AppController get c => widget.controller;
@@ -470,8 +476,11 @@ class _CompanionScreenState extends State<CompanionScreen> with RouteAware {
     _syncVoice();
   }
 
-  void _syncVoice() =>
-      unawaited(voice.suspend(c.busy || section != 0 || !routeVisible));
+  void _syncVoice() => unawaited(
+    voice.suspend(
+      c.busy || c.appLock?.locked == true || section != 0 || !routeVisible,
+    ),
+  );
 
   void _setSection(int value) {
     setState(() => section = value);
@@ -506,6 +515,7 @@ class _CompanionScreenState extends State<CompanionScreen> with RouteAware {
     if (!mounted ||
         !routeVisible ||
         section != 0 ||
+        c.appLock?.locked == true ||
         c.busy ||
         c.activeProfileId != voiceProfileId ||
         command.trim().isEmpty) {
@@ -517,7 +527,7 @@ class _CompanionScreenState extends State<CompanionScreen> with RouteAware {
   }
 
   Future<void> _toggleMicrophone() async {
-    if (c.busy || !routeVisible) return;
+    if (c.busy || c.appLock?.locked == true || !routeVisible) return;
     if (voice.listening || voice.wakeEnabled) {
       await voice.stop();
       return;
@@ -697,6 +707,10 @@ class _CompanionScreenState extends State<CompanionScreen> with RouteAware {
               ),
             ),
           ),
+          // Dedicated files entry from Home: select-then-push the same
+          // library used from profile management, no conversation needed.
+          onViewFiles: (profile) =>
+              openProfileFileLibrary(homeContext, c, profile),
         ),
       ),
     );
@@ -772,6 +786,21 @@ class _CompanionScreenState extends State<CompanionScreen> with RouteAware {
                   color: section == 1
                       ? Theme.of(context).colorScheme.primary
                       : ink,
+                ),
+                IconButton(
+                  key: const Key('vitals-section-switch'),
+                  tooltip: 'Readings and trends',
+                  onPressed: c.busy
+                      ? null
+                      : () {
+                          _closeDrawer();
+                          Navigator.of(context).push(
+                            MaterialPageRoute(
+                              builder: (_) => VitalsScreen(host: c),
+                            ),
+                          );
+                        },
+                  icon: const Icon(Icons.monitor_heart_outlined),
                 ),
               ],
             ),
@@ -1051,6 +1080,12 @@ class _CompanionScreenState extends State<CompanionScreen> with RouteAware {
                   ),
             icon: const Icon(Icons.output_outlined),
           ),
+        if (c.appLock?.enabled == true)
+          IconButton(
+            tooltip: 'Lock Ayumitra',
+            onPressed: c.appLock!.lock,
+            icon: const Icon(Icons.lock_outline),
+          ),
         IconButton(
           tooltip: c.isPreview ? 'Local AI setup' : 'Companion settings',
           onPressed: c.busy
@@ -1095,7 +1130,13 @@ class _CompanionScreenState extends State<CompanionScreen> with RouteAware {
                 ),
                 child: Row(
                   children: [
-                    const Icon(Icons.lock_outline, size: 14, color: ink),
+                    Icon(
+                      c.useFrontierForChat
+                          ? Icons.cloud_outlined
+                          : Icons.lock_outline,
+                      size: 14,
+                      color: ink,
+                    ),
                     const SizedBox(width: 8),
                     Expanded(
                       child: Text(
@@ -1103,9 +1144,11 @@ class _CompanionScreenState extends State<CompanionScreen> with RouteAware {
                             ? (c.intelligence.available
                                   ? 'Local model connected · answers from your documents'
                                   : 'No local model connected — open settings to connect one')
+                            : c.useFrontierForChat
+                            ? 'Cloud chat · ${FrontierModels.providerLabel(c.frontierProvider)} · selected health context leaves this device'
                             : isEmulatorBridge(c)
                             ? 'Development bridge · models run on this Mac · documents stay encrypted here'
-                            : 'Your private companion · AI stays on this device',
+                            : 'Local chat · AI runs on this device',
                         style: const TextStyle(fontSize: 11, color: ink),
                       ),
                     ),
@@ -1283,6 +1326,14 @@ class _CompanionScreenState extends State<CompanionScreen> with RouteAware {
                           .where((h) => href == 'source:${h.citation}')
                           .firstOrNull;
                       if (hit != null) _openSource(hit);
+                      if (href == 'readings:') {
+                        Navigator.of(context).push(
+                          MaterialPageRoute(
+                            builder: (_) => VitalsScreen(host: c),
+                          ),
+                        );
+                      }
+
                       final web = message.web
                           .where((s) => href == s.url.toString())
                           .firstOrNull;
@@ -1306,22 +1357,24 @@ class _CompanionScreenState extends State<CompanionScreen> with RouteAware {
                       fontWeight: FontWeight.w700,
                     ),
                   ),
-                  for (final hit in message.hits.take(6))
+                  for (final group in _groupedHits(message.hits).take(6))
                     ListTile(
                       dense: true,
                       contentPadding: EdgeInsets.zero,
                       leading: const Icon(Icons.description_outlined, size: 18),
                       title: Text(
-                        hit.report.name,
+                        group.report.name,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                       ),
                       subtitle: Text(
-                        'Page ${hit.line.page} · ${hit.line.text}',
+                        group.label,
                         maxLines: 2,
                         overflow: TextOverflow.ellipsis,
                       ),
-                      onTap: () => _openSource(hit),
+                      // Opens the first cited row; every in-text [Page N]
+                      // link still jumps to its exact row.
+                      onTap: () => _openSource(group.rows.first),
                     ),
                   for (final source in message.web)
                     ListTile(
@@ -1346,8 +1399,24 @@ class _CompanionScreenState extends State<CompanionScreen> with RouteAware {
     );
   }
 
+  /// Groups cited rows by their owning report (first-seen order), so one file
+  /// cited repeatedly shows once with its pages and reference count.
+  List<_SourceGroup> _groupedHits(List<EvidenceHit> hits) {
+    final groups = <String, List<EvidenceHit>>{};
+    for (final hit in hits) {
+      groups
+          .putIfAbsent('${hit.report.profileId}/${hit.report.id}', () => [])
+          .add(hit);
+    }
+    return [
+      for (final rows in groups.values) _SourceGroup(rows.first.report, rows),
+    ];
+  }
+
   String _linkedMarkdown(ChatEntry entry) {
-    var text = entry.text;
+    var text =
+        (entry.isUser ? entry.text : normalizeAssistantMarkdown(entry.text))
+            .replaceAll('[vitals]', '[Recorded readings](readings:)');
     for (final hit in entry.hits) {
       text = text.replaceAll(
         '[${hit.citation}]',
@@ -1443,6 +1512,47 @@ class _CompanionScreenState extends State<CompanionScreen> with RouteAware {
                       visualDensity: VisualDensity.compact,
                     ),
                   ),
+                  if (!c.isPreview)
+                    SizedBox(
+                      width: 218,
+                      child: Tooltip(
+                        message: c.useFrontierForChat
+                            ? 'Cloud · ${FrontierModels.providerLabel(c.frontierProvider)} · ${c.frontierModel}'
+                            : 'Local · Gemma 4 · on this device',
+                        child: DropdownButton<String>(
+                          key: const Key('chat-model-picker'),
+                          value: c.useFrontierForChat ? 'frontier' : 'local',
+                          isExpanded: true,
+                          isDense: true,
+                          underline: const SizedBox.shrink(),
+                          icon: const Icon(Icons.expand_more, size: 18),
+                          style: const TextStyle(fontSize: 12, color: ink),
+                          items: [
+                            const DropdownMenuItem(
+                              value: 'local',
+                              child: Text('Local · Gemma 4'),
+                            ),
+                            DropdownMenuItem(
+                              value: 'frontier',
+                              child: Text(
+                                'Cloud · ${FrontierModels.providerLabel(c.frontierProvider)} · ${c.frontierModel}',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                          ],
+                          onChanged:
+                              (c.busy && !c.useFrontierForChat) ||
+                                  _changingChatModel
+                              ? null
+                              : (value) {
+                                  if (value != null) {
+                                    _chooseChatModel(value == 'frontier');
+                                  }
+                                },
+                        ),
+                      ),
+                    ),
                 ],
               ),
             ),
@@ -1463,9 +1573,72 @@ class _CompanionScreenState extends State<CompanionScreen> with RouteAware {
     );
   }
 
+  Future<void> _chooseChatModel(bool cloud) async {
+    if ((c.busy && cloud) || _changingChatModel || c.isPreview) return;
+    setState(() => _changingChatModel = true);
+    try {
+      if (cloud && !c.frontierDisclosureAccepted) {
+        final accepted = await showDialog<bool>(
+          context: context,
+          builder: (dialogContext) => AlertDialog(
+            title: const Text('Cloud model privacy'),
+            content: const SingleChildScrollView(
+              child: Text(
+                'When cloud chat is selected, sending a message sends your question and selected health context directly to the chosen OpenAI or Anthropic provider. This can include private medical details. The provider receives your API key and selected text. No separate server setup is needed. Provider retention policies and charges apply. Original files and images are not attached. '
+                'Planning, query rewriting and research also use your selected cloud model. Malformed answers may use up to 10 format attempts; a task has a bounded total of 32 model calls, and each may incur charges. Network or provider errors stop immediately. '
+                'This warning is shown once on this device. Your selected model stays visible, and messages go directly to it when you press Send. Switch back to Local at any time. There is no automatic cloud fallback.',
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext, false),
+                child: const Text('Keep local'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.pop(dialogContext, true),
+                child: const Text('Use cloud models'),
+              ),
+            ],
+          ),
+        );
+        if (accepted != true || !mounted) return;
+        await c.acceptFrontierDisclosure();
+        if (!mounted || !c.frontierDisclosureAccepted) return;
+      }
+      await c.setFrontierChatMode(cloud);
+    } finally {
+      if (mounted) setState(() => _changingChatModel = false);
+    }
+  }
+
+  Future<void> _sendToFrontier() async {
+    final question = input.text.trim();
+    if (question.isEmpty || c.busy || c.appLock?.locked == true) return;
+    if (!c.frontierDisclosureAccepted) {
+      await _chooseChatModel(true);
+      return;
+    }
+    if (!c.frontierAvailable) {
+      await Navigator.of(
+        context,
+      ).push(MaterialPageRoute(builder: (_) => SettingsScreen(controller: c)));
+      return;
+    }
+    final request = await c.prepareFrontierRequest(question);
+    await c.sendFrontierRequest(request);
+    if (mounted && c.failure == null && input.text.trim() == question) {
+      input.clear();
+    }
+  }
+
   Future<void> _send() async {
+    if (c.busy || _changingChatModel) return;
     final question = input.text.trim();
     if (question.isEmpty) return;
+    if (!c.isPreview && c.useFrontierForChat) {
+      await _sendToFrontier();
+      return;
+    }
     input.clear();
     await c.ask(question);
   }
@@ -1946,6 +2119,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
               const SizedBox(height: 20),
               WebSearchSettings(controller: c),
+              const SizedBox(height: 20),
+              FrontierSettings(controller: c),
               ListTile(
                 leading: const Icon(Icons.code),
                 title: const Text('Open-source licenses'),
@@ -2058,7 +2233,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 padding: const EdgeInsets.all(20),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [WebSearchSettings(controller: c)],
+                  children: [
+                    WebSearchSettings(controller: c),
+                    const SizedBox(height: 20),
+                    FrontierSettings(controller: c),
+                  ],
                 ),
               ),
             ),
@@ -2073,6 +2252,23 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 child: Text(c.failure!),
               ),
             const SizedBox(height: 20),
+            if (c.appLock != null)
+              ListTile(
+                key: const Key('security-settings'),
+                leading: const Icon(Icons.lock_outline),
+                title: const Text('Security and privacy'),
+                subtitle: Text(
+                  c.appLock!.enabled
+                      ? 'App lock enabled'
+                      : 'Add a PIN or device biometrics',
+                ),
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) =>
+                        SecuritySettingsScreen(controller: c.appLock!),
+                  ),
+                ),
+              ),
             ListTile(
               leading: const Icon(Icons.code),
               title: const Text('Open-source licenses'),
@@ -2338,7 +2534,7 @@ class ReportScreen extends StatelessWidget {
 }
 
 String linkedReportSummary(Report report) {
-  var text = report.summaryMarkdown ?? '';
+  var text = normalizeAssistantMarkdown(report.summaryMarkdown ?? '');
   for (final line in report.lines) {
     text = text.replaceAll(
       '[${report.id}/${line.id}]',
@@ -2346,4 +2542,18 @@ String linkedReportSummary(Report report) {
     );
   }
   return text;
+}
+
+/// One cited file in the answer SOURCES view: the owning report plus every
+/// cited row, summarized as pages and reference count.
+class _SourceGroup {
+  _SourceGroup(this.report, this.rows);
+  final Report report;
+  final List<EvidenceHit> rows;
+
+  String get label {
+    final pages = rows.map((row) => row.line.page).toSet().toList()..sort();
+    final refs = rows.length == 1 ? '1 reference' : '${rows.length} references';
+    return '$refs · page${pages.length == 1 ? '' : 's'} ${pages.join(', ')}';
+  }
 }

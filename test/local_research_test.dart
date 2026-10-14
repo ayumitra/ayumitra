@@ -255,7 +255,7 @@ void main() {
       ).run(userRequest: 'Explain medicine.', searchAvailable: false);
       expect(generations, 1);
       expect(result.sources.length, 0);
-      expect(result.notices.single.contains('no cloud AI fallback'), true);
+      expect(result.notices.single.contains('no fallback model'), true);
     },
   );
 
@@ -276,7 +276,7 @@ void main() {
         queryAllowed: (_) => true,
       ).run(userRequest: 'Explain medicine.');
       expect(result.sources.length, 1);
-      expect(result.notices.single.contains('no cloud AI fallback'), true);
+      expect(result.notices.single.contains('no fallback model'), true);
       expect(result.notices.single.contains('private error details'), false);
     },
   );

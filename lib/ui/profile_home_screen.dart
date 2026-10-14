@@ -12,11 +12,16 @@ class ProfileHomeScreen extends StatefulWidget {
     required this.controller,
     required this.onOpenProfile,
     required this.onAddProfile,
+    this.onViewFiles,
   });
 
   final AppController controller;
   final Future<void> Function(String) onOpenProfile;
   final VoidCallback onAddProfile;
+
+  /// Optional dedicated files entry: opens [profile]'s file library without
+  /// going through a conversation. When null, no files button is shown.
+  final Future<void> Function(Profile profile)? onViewFiles;
 
   @override
   State<ProfileHomeScreen> createState() => _ProfileHomeScreenState();
@@ -79,13 +84,28 @@ class _ProfileHomeScreenState extends State<ProfileHomeScreen> {
             ].join(' · '),
           ),
         ),
-        trailing: opening
-            ? const SizedBox(
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (widget.onViewFiles != null)
+              IconButton(
+                key: ValueKey('home-files-${profile.id}'),
+                tooltip: 'Files',
+                onPressed: !_enabled
+                    ? null
+                    : () => widget.onViewFiles!(profile),
+                icon: const Icon(Icons.folder_open_outlined),
+              ),
+            if (opening)
+              const SizedBox(
                 width: 22,
                 height: 22,
                 child: CircularProgressIndicator(strokeWidth: 2),
               )
-            : const Icon(Icons.arrow_forward_rounded),
+            else
+              const Icon(Icons.arrow_forward_rounded),
+          ],
+        ),
         enabled: _enabled,
         onTap: _enabled ? () => _openProfile(profile.id) : null,
       ),

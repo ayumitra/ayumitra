@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'model_json.dart';
+import 'vitals.dart';
 
 /// Generation constraint for local servers that support structured output.
 /// Plans are still independently checked by [validateAgentPlan] before tools run.
@@ -25,6 +26,7 @@ const agentPlanSchema = <String, Object>{
               'web_search',
               'conversation',
               'extended_thinking',
+              'record_metric',
             ],
           },
           'query': {'type': 'string', 'maxLength': 500},
@@ -54,6 +56,7 @@ List<AgentAction> validateAgentPlan(String text) {
     'web_search',
     'conversation',
     'extended_thinking',
+    'record_metric',
   };
   final result = <AgentAction>[];
   for (final proposal in list) {
@@ -69,6 +72,10 @@ List<AgentAction> validateAgentPlan(String text) {
     }
     if (proposal['action'] == 'extended_thinking' && query.isNotEmpty) {
       throw const FormatException('Extended thinking takes no query.');
+    }
+    if (proposal['action'] == 'record_metric' &&
+        parseMetricRequest(query) == null) {
+      throw const FormatException('Invalid metric recording.');
     }
     result.add(AgentAction(proposal['action'], query));
   }

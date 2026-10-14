@@ -7,6 +7,8 @@ import 'package:pdfrx/pdfrx.dart';
 
 import 'app_controller.dart';
 import 'services/notice_registry.dart';
+import 'services/app_lock.dart';
+import 'ui/app_lock_screen.dart';
 import 'ui/app.dart';
 
 /// Native startup shared by development entrypoints. Mirrors main.dart's
@@ -19,9 +21,33 @@ Future<void> launchAyumitraController(AppController controller) async {
   FlutterError.onError = (details) {
     debugPrint('Ayumitra UI error: ${details.exception.runtimeType}');
   };
-  runApp(AyumitraApp(controller: controller));
+  final appLock = controller.appLock ?? AppLockController();
+  controller.appLock = appLock;
+  runApp(
+    AppLockGate(
+      controller: appLock,
+      child: AyumitraApp(controller: controller),
+    ),
+  );
   unawaited(() async {
     try {
+      await appLock.initialize();
+      if (!appLock.initialized || appLock.locked) {
+        final unlocked = Completer<void>();
+        void changed() {
+          if (appLock.initialized && !appLock.locked && !unlocked.isCompleted) {
+            unlocked.complete();
+          }
+        }
+
+        appLock.addListener(changed);
+        changed();
+        try {
+          await unlocked.future;
+        } finally {
+          appLock.removeListener(changed);
+        }
+      }
       await pdfrxFlutterInitialize();
       await controller.initialize();
       unawaited(controller.ensureAutomaticModels());

@@ -4,6 +4,7 @@ import 'package:intl/intl.dart';
 import '../app_controller.dart';
 import '../domain/records.dart';
 import '../services/web_llm.dart';
+import 'camera_pages_dialog.dart';
 
 /// Per-profile uploaded-file library.
 ///
@@ -53,6 +54,25 @@ class _ProfileFilesScreenState extends State<ProfileFilesScreen> {
   void dispose() {
     find.dispose();
     super.dispose();
+  }
+
+  bool get _ownsLibrary =>
+      widget.controller.activeProfileId == widget.profileId &&
+      widget.controller.data.profiles.any((p) => p.id == widget.profileId);
+
+  Future<void> _add({bool camera = false}) async {
+    final c = widget.controller;
+    if (!_ownsLibrary || c.busy) return;
+    if (camera) {
+      await c.addCameraReportToProfile(
+        onAnotherPage: (count) async {
+          if (!mounted || !_ownsLibrary) return false;
+          return askForAnotherCameraPage(context, count);
+        },
+      );
+    } else {
+      await c.addFileToProfile();
+    }
   }
 
   String _dateLine(Report report) => report.eventDate == null
@@ -114,6 +134,40 @@ class _ProfileFilesScreenState extends State<ProfileFilesScreen> {
               style: const TextStyle(fontSize: 12, height: 1.5),
             ),
             const SizedBox(height: 12),
+            Wrap(
+              spacing: 12,
+              runSpacing: 8,
+              children: [
+                FilledButton.icon(
+                  onPressed: c.busy ? null : () => _add(),
+                  icon: const Icon(Icons.upload_file_outlined),
+                  label: const Text('Add files'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: c.busy ? null : () => _add(camera: true),
+                  icon: const Icon(Icons.document_scanner_outlined),
+                  label: const Text('Scan pages'),
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            const Text(
+              'Add originals here without starting a conversation. Scan up to 5 pages as one report.',
+            ),
+            if (c.busy && c.activity.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: Text(c.activity),
+              ),
+            if (c.failure != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: Text(
+                  c.failure!,
+                  style: TextStyle(color: Theme.of(context).colorScheme.error),
+                ),
+              ),
+            const SizedBox(height: 12),
             TextField(
               controller: find,
               decoration: const InputDecoration(
@@ -143,10 +197,14 @@ class _ProfileFilesScreenState extends State<ProfileFilesScreen> {
                     '${profileFileStatus(report.status)}',
                   ),
                   isThreeLine: true,
-                  onTap: () => widget.onOpenReport(report),
+                  onTap: () {
+                    if (_ownsLibrary) widget.onOpenReport(report);
+                  },
                   trailing: IconButton(
                     tooltip: 'Open original',
-                    onPressed: () => widget.onOpenOriginal(report),
+                    onPressed: () {
+                      if (_ownsLibrary) widget.onOpenOriginal(report);
+                    },
                     icon: const Icon(Icons.open_in_new_outlined),
                   ),
                 ),

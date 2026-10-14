@@ -442,11 +442,44 @@ Future<void> _answerChecks(AppController c, Report report) async {
     answer != null && !answer.isUser,
     'report question answered locally',
   );
+  // Controlled format metadata only: never log the model's answer, source
+  // excerpts, filenames, credentials, or any health-bearing output.
+  final rawAnswer = answer!.text;
+  final hasExpectedNumberStandalone =
+      ((_scan || _camera)
+              ? RegExp(r'(?<![\d.])250(?:\.0+)?(?![\d.])')
+              : RegExp(r'(?<![\d.])11\.2(?![\d.])'))
+          .hasMatch(rawAnswer);
+  final looseUnitProbe = rawAnswer
+      .replaceAll(
+        RegExp(r'\\(?:mathrm|textrm|text|operatorname|frac|dfrac|tfrac)\b'),
+        '',
+      )
+      .replaceAll(RegExp(r'[{}$]'), '')
+      .toLowerCase();
+  final expectedLooseUnit =
+      ((_scan || _camera)
+              ? RegExp(r'\bmg\b')
+              : RegExp(r'\bg\s*(?:[/⁄]|per)?\s*d\s*l\b'))
+          .hasMatch(looseUnitProbe);
+  final hasMathCommands = RegExp(
+    r'\\(?:frac|dfrac|tfrac|mathrm|textrm|text|operatorname|left|right|begin|end|cdot|times|boxed|sqrt|displaystyle)\b|\\[()\[\]]|\$',
+  ).hasMatch(rawAnswer);
+  final hasLiteralNewline = rawAnswer.contains(r'\n');
+  final citationsCount = RegExp(r'\[[^\]\n]+\]').allMatches(rawAnswer).length;
+  debugPrint(
+    'AYUMITRA_IMPORT ANSWER_FORMAT '
+    'hasExpectedNumberStandalone=$hasExpectedNumberStandalone '
+    'expectedLooseUnit=$expectedLooseUnit '
+    'hasMathCommands=$hasMathCommands '
+    'hasLiteralNewline=$hasLiteralNewline '
+    'citationsCount=$citationsCount',
+  );
   final expected = (_scan || _camera)
       ? RegExp(r'(?<![\d.])250\s*mg\b', caseSensitive: false)
       : RegExp(r'(?<![\d.])11\.2\s*g/dL\b', caseSensitive: false);
   _require(
-    expected.hasMatch(answer!.text.replaceAll(RegExp(r'[*_`]'), '')),
+    expected.hasMatch(rawAnswer.replaceAll(RegExp(r'[*_`]'), '')),
     'local answer preserves exact value and unit',
   );
   _require(

@@ -5,6 +5,7 @@ import UniformTypeIdentifiers
 @main
 @objc class AppDelegate: FlutterAppDelegate, FlutterImplicitEngineDelegate {
   private var privacyChannel: FlutterMethodChannel?
+  private var appLockChannel: FlutterMethodChannel?
   private var localPicker: AyumitraFilePicker?
   override func application(
     _ application: UIApplication,
@@ -16,6 +17,7 @@ import UniformTypeIdentifiers
   // Foreground-only voice: release the mic when leaving the app. There is
   // no background service and no always-on hotword engine.
   override func applicationWillResignActive(_ application: UIApplication) {
+    AyumitraPrivacyShield.shared.show()
     LocalVoiceBridge.shared.handleAppBackground()
     super.applicationWillResignActive(application)
   }
@@ -30,6 +32,30 @@ import UniformTypeIdentifiers
     guard let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "AyumitraPrivacy") else { return }
     let channel = FlutterMethodChannel(name: "app.ayumitra/privacy", binaryMessenger: registrar.messenger())
     privacyChannel = channel
+    let appLock = FlutterMethodChannel(name: "app.ayumitra/app_lock", binaryMessenger: registrar.messenger())
+    appLockChannel = appLock
+    appLock.setMethodCallHandler { call, result in
+      guard let args = call.arguments as? [String: Any] else {
+        result(FlutterError(code: "BAD_ARGUMENT", message: "A privacy setting is required.", details: nil)); return
+      }
+      switch call.method {
+      case "setPrivacyEnabled":
+        guard let enabled = args["enabled"] as? Bool else {
+          result(FlutterError(code: "BAD_ARGUMENT", message: "A privacy setting is required.", details: nil)); return
+        }
+        AyumitraPrivacyShield.shared.setEnabled(enabled)
+        result(true)
+      case "setPrivacyVisible":
+        guard let visible = args["visible"] as? Bool else {
+          result(FlutterError(code: "BAD_ARGUMENT", message: "A privacy visibility setting is required.", details: nil)); return
+        }
+        AyumitraPrivacyShield.shared.setVisible(visible)
+        result(true)
+      default: result(FlutterMethodNotImplemented)
+      }
+    }
+    // Register scene-inactive observation before displaying health content.
+    _ = AyumitraPrivacyShield.shared
     LocalEmbeddingBridge.register(messenger: registrar.messenger())
     LocalVoiceBridge.register(messenger: registrar.messenger())
     let picker = AyumitraFilePicker()
@@ -64,6 +90,84 @@ import UniformTypeIdentifiers
         result(FlutterError(code: "PROTECTION_FAILED", message: "Local file protection could not be applied.", details: nil))
       }
     }
+  }
+}
+
+/// Obscures app-switcher snapshots while optional app lock is enabled. This
+/// does not block screenshots while iOS is active. No secure-text-field hacks.
+/// Covers remain after activation until Dart has rendered its lock/unlocked
+/// gate and calls setPrivacyVisible(false). Inactive alone never requests auth.
+final class AyumitraPrivacyShield: NSObject {
+  static let shared = AyumitraPrivacyShield()
+  private var enabled = true
+  private var covers: [ObjectIdentifier: UIView] = [:]
+
+  private override init() {
+    super.init()
+    // Scene-based apps need this notification: applicationWillResignActive is
+    // only a fallback for older lifecycle forwarding. The observer adds no
+    // SceneDelegate override, preserving Flutter's existing scene callbacks.
+    NotificationCenter.default.addObserver(self, selector: #selector(sceneWillDeactivate(_:)),
+      name: UIScene.willDeactivateNotification, object: nil)
+  }
+
+  @objc private func sceneWillDeactivate(_ notification: Notification) {
+    show(scene: notification.object as? UIScene)
+  }
+
+  func setEnabled(_ next: Bool) {
+    enabled = next
+    if !next {
+      removeCovers()
+    } else if UIApplication.shared.applicationState != .active {
+      show()
+    }
+  }
+
+  func setVisible(_ visible: Bool) {
+    guard enabled else { removeCovers(); return }
+    if visible || UIApplication.shared.applicationState != .active {
+      show()
+    } else {
+      removeCovers()
+    }
+  }
+
+  func show(scene: UIScene? = nil) {
+    guard enabled else { return }
+    let scenes = scene.map { [$0] } ?? Array(UIApplication.shared.connectedScenes)
+    for windowScene in scenes.compactMap({ $0 as? UIWindowScene }) {
+      for window in windowScene.windows where !window.isHidden && window.windowLevel == .normal {
+        let key = ObjectIdentifier(window)
+        if let cover = covers[key] {
+          window.bringSubviewToFront(cover)
+          continue
+        }
+        let cover = UIView(frame: window.bounds)
+        cover.backgroundColor = .systemBackground
+        cover.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        cover.isUserInteractionEnabled = true
+        cover.accessibilityViewIsModal = true
+        cover.accessibilityIdentifier = "ayumitra-privacy-shield"
+        let label = UILabel()
+        label.text = "Ayumitra"
+        label.font = .systemFont(ofSize: 24, weight: .medium)
+        label.textColor = .label
+        label.translatesAutoresizingMaskIntoConstraints = false
+        cover.addSubview(label)
+        NSLayoutConstraint.activate([
+          label.centerXAnchor.constraint(equalTo: cover.centerXAnchor),
+          label.centerYAnchor.constraint(equalTo: cover.centerYAnchor),
+        ])
+        window.addSubview(cover)
+        covers[key] = cover
+      }
+    }
+  }
+
+  private func removeCovers() {
+    for cover in covers.values { cover.removeFromSuperview() }
+    covers.removeAll()
   }
 }
 

@@ -127,8 +127,8 @@ void main() {
           'Bad three.',
         ]);
         final controller = await _nativeController(directory, intelligence);
-        // First attempt plus two controlled repairs, then the cap fallback.
-        expect(intelligence.summaryCalls, 3);
+        // First attempt plus nine controlled repairs, then the cap fallback.
+        expect(intelligence.summaryCalls, 10);
         for (final input in intelligence.summaryInputs) {
           expect(
             input,
