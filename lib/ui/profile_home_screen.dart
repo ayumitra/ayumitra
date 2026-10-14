@@ -13,11 +13,13 @@ class ProfileHomeScreen extends StatefulWidget {
     required this.onOpenProfile,
     required this.onAddProfile,
     this.onViewFiles,
+    this.onSettings,
   });
 
   final AppController controller;
   final Future<void> Function(String) onOpenProfile;
   final VoidCallback onAddProfile;
+  final VoidCallback? onSettings;
 
   /// Optional dedicated files entry: opens [profile]'s file library without
   /// going through a conversation. When null, no files button is shown.
@@ -120,6 +122,15 @@ class _ProfileHomeScreenState extends State<ProfileHomeScreen> {
       final colors = Theme.of(context).colorScheme;
       return Scaffold(
         appBar: AppBar(
+          actions: [
+            if (widget.onSettings != null)
+              IconButton(
+                key: const Key('home-settings'),
+                tooltip: 'Settings',
+                onPressed: widget.onSettings,
+                icon: const Icon(Icons.settings_outlined),
+              ),
+          ],
           title: const Row(
             mainAxisSize: MainAxisSize.min,
             children: [

@@ -9,6 +9,7 @@ import 'local_embeddings.dart';
 import 'local_intelligence.dart';
 import 'validated_transcript.dart';
 import 'local_research.dart';
+import 'task_cancellation.dart';
 
 /// Strict-local bridge for the in-memory web client.
 ///
@@ -310,9 +311,90 @@ const _jsonInstructions = {
   researchAssessorPrompt,
 };
 
+/// A per-operation wrapper; cancelling never closes the shared client or sends
+/// server-wide unload/stop requests that could affect another app's model work.
+class _OperationClient extends http.BaseClient {
+  _OperationClient(this.inner, this.token);
+  final http.Client inner;
+  final CancellationToken token;
+  @override
+  Future<http.StreamedResponse> send(http.BaseRequest request) async {
+    token.throwIfCancelled();
+    if (request is! http.Request) {
+      throw StateError('Unsupported local request.');
+    }
+    final outgoing =
+        http.AbortableRequest(
+            request.method,
+            request.url,
+            abortTrigger: token.whenCancelled,
+          )
+          ..followRedirects = false
+          ..headers.addAll(request.headers)
+          ..bodyBytes = request.bodyBytes;
+    final response = await token.race(
+      inner.send(outgoing).then((response) {
+        if (token.isCancelled) {
+          unawaited(response.stream.listen(null).cancel());
+          throw const TaskCancelled();
+        }
+        return response;
+      }),
+    );
+    late StreamSubscription<List<int>> subscription;
+    var finished = false;
+    late StreamController<List<int>> body;
+    body = StreamController<List<int>>(
+      onListen: () {
+        subscription = response.stream.listen(
+          body.add,
+          onError: body.addError,
+          onDone: () {
+            finished = true;
+            unawaited(body.close());
+          },
+        );
+        token.whenCancelled.then<void>((_) {
+          if (!finished) {
+            finished = true;
+            body.addError(const TaskCancelled());
+            unawaited(subscription.cancel());
+            unawaited(body.close());
+          }
+        });
+      },
+      onCancel: () async {
+        finished = true;
+        await subscription.cancel();
+      },
+    );
+    return http.StreamedResponse(
+      body.stream,
+      response.statusCode,
+      contentLength: response.contentLength,
+      headers: response.headers,
+      isRedirect: response.isRedirect,
+      persistentConnection: response.persistentConnection,
+      reasonPhrase: response.reasonPhrase,
+      request: outgoing,
+    );
+  }
+
+  @override
+  void close() {} // The reusable parent client belongs to its caller.
+}
+
 class WebIntelligence extends LocalIntelligence {
   WebIntelligence({http.Client? client}) : _client = client ?? http.Client();
   final http.Client _client;
+  final _operations = <CancellationToken>{};
+
+  @override
+  Future<void> cancelGeneration() async {
+    for (final token in _operations.toList()) {
+      token.cancel();
+    }
+  }
 
   /// Discovery and verification share this bridge's client and local-only rules.
   Future<List<LocalModelInfo>> discoverInstalledModels({String? endpoint}) =>
@@ -392,30 +474,42 @@ class WebIntelligence extends LocalIntelligence {
     }
   }
 
-  Future<LocalModelInfo> _checkChat(String base, String name) async {
+  Future<LocalModelInfo> _checkChat(
+    String base,
+    String name, {
+    http.Client? client,
+  }) async {
     try {
       return await _verifyModel(
-        _client,
+        client ?? _client,
         base,
         name,
         needCapability: 'completion',
         role: 'chat',
       );
+    } on TaskCancelled {
+      rethrow;
     } catch (_) {
       _clearChat();
       rethrow;
     }
   }
 
-  Future<LocalModelInfo> _checkVision(String base, String name) async {
+  Future<LocalModelInfo> _checkVision(
+    String base,
+    String name, {
+    http.Client? client,
+  }) async {
     try {
       return await _verifyModel(
-        _client,
+        client ?? _client,
         base,
         name,
         needCapability: 'vision',
         role: 'vision transcription',
       );
+    } on TaskCancelled {
+      rethrow;
     } catch (_) {
       _clearVision();
       rethrow;
@@ -439,7 +533,7 @@ class WebIntelligence extends LocalIntelligence {
   /// health-bearing call. Catches alias retargeting, removed/changed
   /// weights, and newly remote serving; any failure clears the stored
   /// verification instead of retaining a stale success.
-  Future<String> _liveChatBase() async {
+  Future<String> _liveChatBase({http.Client? client}) async {
     late final String base;
     try {
       base = _validatedBase(endpoint);
@@ -454,7 +548,7 @@ class WebIntelligence extends LocalIntelligence {
         'Connect and verify the local chat model first — unverified models never receive report content.',
       );
     }
-    final meta = await _checkChat(base, name);
+    final meta = await _checkChat(base, name, client: client);
     if (chatInfo != null && meta.digest != chatInfo!.digest) {
       _clearChat();
       throw StateError(
@@ -468,7 +562,7 @@ class WebIntelligence extends LocalIntelligence {
   }
 
   /// Same live re-verification for the vision model before every image.
-  Future<String> _liveVisionBase() async {
+  Future<String> _liveVisionBase({http.Client? client}) async {
     late final String base;
     try {
       base = _validatedBase(endpoint);
@@ -483,7 +577,7 @@ class WebIntelligence extends LocalIntelligence {
         'Connect and verify the local vision model first — unverified models never receive images.',
       );
     }
-    final meta = await _checkVision(base, name);
+    final meta = await _checkVision(base, name, client: client);
     if (visionInfo != null && meta.digest != visionInfo!.digest) {
       _clearVision();
       throw StateError(
@@ -505,12 +599,35 @@ class WebIntelligence extends LocalIntelligence {
 
   @override
   Future<String> generate(String instruction, String input) async {
+    final token = CancellationToken();
+    _operations.add(token);
+    try {
+      return await token.race(
+        _generateWithCancellation(
+          instruction,
+          input,
+          _OperationClient(_client, token),
+          token,
+        ),
+      );
+    } finally {
+      _operations.remove(token);
+      token.cancel();
+    }
+  }
+
+  Future<String> _generateWithCancellation(
+    String instruction,
+    String input,
+    http.Client client,
+    CancellationToken token,
+  ) async {
     if (instruction.length + input.length > 100000) {
       throw const FormatException(
         'The local request exceeded the safety limit.',
       );
     }
-    final base = await _liveChatBase();
+    final base = await _liveChatBase(client: client);
     final body = <String, dynamic>{
       'model': _verifiedChat,
       'system': instruction,
@@ -542,7 +659,7 @@ class WebIntelligence extends LocalIntelligence {
     late final String text;
     try {
       final data = await _postJson(
-        _client,
+        client,
         Uri.parse('$base/api/generate'),
         body,
         timeout: const Duration(minutes: 5),
@@ -557,6 +674,7 @@ class WebIntelligence extends LocalIntelligence {
       text = (data['response'] as String? ?? '').trim();
       if (text.isEmpty) throw const FormatException('Empty local response.');
     } catch (_) {
+      if (token.isCancelled) throw const TaskCancelled();
       _clearChat();
       rethrow;
     }
@@ -569,17 +687,38 @@ class WebIntelligence extends LocalIntelligence {
 
   /// Transcribes a scan/photo with the verified local vision model.
   Future<List<String>> transcribeBytes(List<int> bytes) async {
+    final token = CancellationToken();
+    _operations.add(token);
+    try {
+      return await token.race(
+        _transcribeWithCancellation(
+          bytes,
+          _OperationClient(_client, token),
+          token,
+        ),
+      );
+    } finally {
+      _operations.remove(token);
+      token.cancel();
+    }
+  }
+
+  Future<List<String>> _transcribeWithCancellation(
+    List<int> bytes,
+    http.Client client,
+    CancellationToken token,
+  ) async {
     if (bytes.length > 15 * 1024 * 1024) {
       throw const FormatException('The image exceeded the local safety limit.');
     }
     // Capture once before any metadata/inference await; controller restores the
     // inherited owner-scoped field after parsing, while retries reuse this copy.
     final profileContext = jsonDecode(jsonEncode(visionProfileContext));
-    await _liveVisionBase();
+    await _liveVisionBase(client: client);
     late final List<String> lines;
     try {
       lines = await generateValidatedTranscript((repairHint) async {
-        final liveBase = await _liveVisionBase();
+        final liveBase = await _liveVisionBase(client: client);
         final body = <String, dynamic>{
           'model': _verifiedVision,
           'system': transcriptionPrompt,
@@ -593,7 +732,7 @@ class WebIntelligence extends LocalIntelligence {
           body['think'] = false;
         }
         final data = await _postJson(
-          _client,
+          client,
           Uri.parse('$liveBase/api/generate'),
           body,
           timeout: const Duration(minutes: 5),
@@ -608,6 +747,7 @@ class WebIntelligence extends LocalIntelligence {
         return (data['response'] as String?) ?? '';
       });
     } catch (_) {
+      if (token.isCancelled) throw const TaskCancelled();
       _clearVision();
       rethrow;
     }

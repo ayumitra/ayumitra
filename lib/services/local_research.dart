@@ -1,3 +1,4 @@
+import 'task_cancellation.dart';
 import 'dart:convert';
 
 import '../domain/model_json.dart';
@@ -69,6 +70,8 @@ class LocalResearch {
             }),
           ),
         );
+      } on TaskCancelled {
+        rethrow;
       } catch (_) {
         notice(
           'The research plan could not be validated. Collected sources were kept.',
@@ -117,6 +120,8 @@ class LocalResearch {
             );
             received = true;
           }
+        } on TaskCancelled {
+          rethrow;
         } catch (_) {
           notice(
             'A public search could not complete. Collected sources were kept; no fallback model was used.',
@@ -161,6 +166,8 @@ class LocalResearch {
           if (!missingTopics.contains(topic)) missingTopics.add(topic);
         }
         if (missingTopics.isEmpty) break;
+      } on TaskCancelled {
+        rethrow;
       } catch (_) {
         notice(
           'Research evidence could not be assessed. Collected sources were kept.',

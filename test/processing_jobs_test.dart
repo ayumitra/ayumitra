@@ -38,6 +38,44 @@ ReportProcessingJob _job(
 
 void main() {
   test(
+    'paused jobs survive reload and startup enqueue until an explicit retry',
+    () {
+      final queued = enqueueReportJob(
+        _fixture(),
+        'shared-report',
+        'alice',
+        _now,
+      );
+      final attempted = failReportJob(queued, 'shared-report', 'alice', _now);
+      final paused = pauseReportJob(attempted, 'shared-report', 'alice');
+      final restored = VaultData.decode(jsonEncode(paused.toJson()));
+      final startup = enqueueReportJob(
+        restored,
+        'shared-report',
+        'alice',
+        _now,
+      );
+      expect(startup.processingJobs.single.paused, isTrue);
+      expect(startup.processingJobs.single.attempts, 1);
+      expect(
+        pendingReportJobs(startup, _now.add(const Duration(days: 30))),
+        isEmpty,
+      );
+      final retry = enqueueReportJob(
+        startup,
+        'shared-report',
+        'alice',
+        _now,
+        resetAttempts: true,
+      );
+      expect(retry.processingJobs.single.paused, isFalse);
+      expect(retry.processingJobs.single.attempts, 0);
+      expect(pendingReportJobs(retry, _now).length, 1);
+      final legacy = queued.processingJobs.single.toJson()..remove('paused');
+      expect(ReportProcessingJob.fromJson(legacy).paused, isFalse);
+    },
+  );
+  test(
     'new queue is due and idempotent enqueue cannot reset persisted backoff',
     () {
       final queued = enqueueReportJob(

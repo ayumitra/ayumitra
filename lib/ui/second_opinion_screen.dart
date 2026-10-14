@@ -33,6 +33,8 @@ class _SecondOpinionScreenState extends State<SecondOpinionScreen> {
   bool generating = false;
   int _editRevision = 0;
   int _generation = 0;
+  int? _cancellationSnapshot;
+  bool _hasGenerated = false;
 
   @override
   void initState() {
@@ -41,23 +43,41 @@ class _SecondOpinionScreenState extends State<SecondOpinionScreen> {
     pack = c.secondOpinionPack();
     text = TextEditingController(text: pack.markdown);
     c.addListener(_controllerChanged);
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted && _editRevision == 0 && c.selectedAssistantAvailable) {
-        _generate();
-      }
-    });
   }
 
   @override
   void dispose() {
     _generation++;
     c.removeListener(_controllerChanged);
+    // Unmount runs while Flutter locks the tree. Stop synchronously, but let
+    // async task cleanup notify the remaining routes once that lock is gone.
+    if (generating) c.cancelCurrentTask(notify: false);
     text.dispose();
     super.dispose();
   }
 
   void _controllerChanged() {
-    if (mounted) setState(() {});
+    if (!mounted) return;
+    if (generating &&
+        _cancellationSnapshot != null &&
+        c.cancellationRevision != _cancellationSnapshot) {
+      _generation++;
+      generating = false;
+      _cancellationSnapshot = null;
+      status = 'Generation stopped. Your draft and edits were kept.';
+    }
+    setState(() {});
+  }
+
+  void _stopGeneration() {
+    if (!generating) return;
+    setState(() {
+      _generation++;
+      generating = false;
+      _cancellationSnapshot = null;
+      status = 'Generation stopped. Your draft and edits were kept.';
+    });
+    c.cancelCurrentTask();
   }
 
   Future<void> _generate() async {
@@ -69,6 +89,8 @@ class _SecondOpinionScreenState extends State<SecondOpinionScreen> {
       return;
     }
     final generation = ++_generation;
+    final cancellation = c.cancellationRevision;
+    _cancellationSnapshot = cancellation;
     final revision = _editRevision;
     final profileId = pack.profileId;
     final sessionId = pack.sessionId;
@@ -81,6 +103,12 @@ class _SecondOpinionScreenState extends State<SecondOpinionScreen> {
     try {
       final generated = await c.generateSecondOpinionDraft();
       if (!mounted || generation != _generation) return;
+      if (c.cancellationRevision != cancellation) {
+        setState(
+          () => status = 'Generation stopped. Your draft and edits were kept.',
+        );
+        return;
+      }
       if (!scopeMatches ||
           c.profile?.id != profileId ||
           c.activeSession?.id != sessionId) {
@@ -113,6 +141,7 @@ class _SecondOpinionScreenState extends State<SecondOpinionScreen> {
       }
       setState(() {
         pack = generated;
+        _hasGenerated = true;
         text.text = generated.markdown;
         status = 'Draft generated. Review and edit it before sharing.';
       });
@@ -125,7 +154,10 @@ class _SecondOpinionScreenState extends State<SecondOpinionScreen> {
       }
     } finally {
       if (mounted && generation == _generation) {
-        setState(() => generating = false);
+        setState(() {
+          generating = false;
+          _cancellationSnapshot = null;
+        });
       }
     }
   }
@@ -150,7 +182,7 @@ class _SecondOpinionScreenState extends State<SecondOpinionScreen> {
   }
 
   Future<void> _act({String? target, Uri? url}) async {
-    if (pending || generating) {
+    if (pending || generating || c.busy) {
       return;
     }
     if (!reviewed || text.text.trim().isEmpty) {
@@ -276,7 +308,9 @@ class _SecondOpinionScreenState extends State<SecondOpinionScreen> {
                     ),
                     SizedBox(width: 12),
                     Expanded(
-                      child: Text('Preparing your draft with the local model…'),
+                      child: Text(
+                        'Preparing your draft with the selected model…',
+                      ),
                     ),
                   ],
                 ),
@@ -287,7 +321,16 @@ class _SecondOpinionScreenState extends State<SecondOpinionScreen> {
                     ? null
                     : _generate,
                 icon: const Icon(Icons.auto_awesome_outlined),
-                label: const Text('Regenerate draft'),
+                label: Text(
+                  _hasGenerated ? 'Regenerate draft' : 'Generate draft',
+                ),
+              ),
+            if (generating)
+              OutlinedButton.icon(
+                key: const Key('stop-draft-generation'),
+                onPressed: _stopGeneration,
+                icon: const Icon(Icons.stop_circle_outlined),
+                label: const Text('Stop generation'),
               ),
             if (!scopeMatches)
               const Text(
@@ -325,7 +368,7 @@ class _SecondOpinionScreenState extends State<SecondOpinionScreen> {
                 'I reviewed this text and choose to copy/share it',
               ),
               value: reviewed,
-              onChanged: pending || generating || !scopeMatches
+              onChanged: pending || generating || c.busy || !scopeMatches
                   ? null
                   : (v) => setState(() => reviewed = v ?? false),
             ),
@@ -337,7 +380,7 @@ class _SecondOpinionScreenState extends State<SecondOpinionScreen> {
             if (status != null) Text(status!),
             const SizedBox(height: 12),
             FilledButton.icon(
-              onPressed: pending || generating || !scopeMatches
+              onPressed: pending || generating || c.busy || !scopeMatches
                   ? null
                   : () => _act(),
               icon: const Icon(Icons.copy_outlined),
@@ -348,7 +391,7 @@ class _SecondOpinionScreenState extends State<SecondOpinionScreen> {
               children: [
                 Expanded(
                   child: OutlinedButton.icon(
-                    onPressed: pending || generating || !scopeMatches
+                    onPressed: pending || generating || c.busy || !scopeMatches
                         ? null
                         : () => _act(
                             target: 'chatgpt',
@@ -361,7 +404,7 @@ class _SecondOpinionScreenState extends State<SecondOpinionScreen> {
                 const SizedBox(width: 12),
                 Expanded(
                   child: OutlinedButton.icon(
-                    onPressed: pending || generating || !scopeMatches
+                    onPressed: pending || generating || c.busy || !scopeMatches
                         ? null
                         : () => _act(
                             target: 'claude',

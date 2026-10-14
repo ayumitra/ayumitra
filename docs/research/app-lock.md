@@ -7,7 +7,7 @@ It is off by default and never a sign-in, account, or cloud check.
 ## User guide
 
 - **Off by default.** Nothing changes until you enable it in
-  Settings → Security and privacy.
+  Settings → App lock · all profiles (Security and privacy).
 - **Two modes:** device biometrics / screen lock (fingerprint, face, PIN,
   pattern — whatever secures the phone), or an app PIN of 6–12 digits.
 - **Changing or disabling an existing lock requires authenticating first.**

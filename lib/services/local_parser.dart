@@ -1,3 +1,4 @@
+import 'task_cancellation.dart';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
@@ -132,6 +133,8 @@ class LocalParser {
           } finally {
             rendered.dispose();
           }
+        } on TaskCancelled {
+          rethrow;
         } catch (_) {
           if (characters < 12) rethrow;
           // Sparse native text is explicitly incomplete, never a ready report.

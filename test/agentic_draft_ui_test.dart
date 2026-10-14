@@ -5,6 +5,7 @@ import 'package:ayumitra/domain/records.dart';
 import 'package:ayumitra/domain/second_opinion.dart';
 import 'package:ayumitra/services/local_intelligence.dart';
 import 'package:ayumitra/ui/second_opinion_screen.dart';
+import 'package:ayumitra/ui/app.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -37,9 +38,13 @@ class _DraftController extends AppController {
   final response = Completer<SecondOpinionPack?>();
   int calls = 0;
   @override
-  Future<SecondOpinionPack?> generateSecondOpinionDraft() {
+  Future<SecondOpinionPack?> generateSecondOpinionDraft() async {
     calls++;
-    return response.future;
+    SecondOpinionPack? result;
+    await runCancellableTask('Preparing draft', () async {
+      result = await taskCall(() => response.future);
+    });
+    return result;
   }
 
   SecondOpinionPack result() => SecondOpinionPack(
@@ -60,43 +65,46 @@ Future<void> _mount(WidgetTester tester, _DraftController c) async {
 }
 
 void main() {
-  testWidgets(
-    'draft is generated once locally and remains editable for review',
-    (tester) async {
-      final c = _DraftController();
-      addTearDown(c.dispose);
-      await _mount(tester, c);
-      expect(c.calls, 1);
-      expect(find.textContaining('Preparing your draft'), findsOneWidget);
-      c.response.complete(c.result());
-      await tester.pumpAndSettle();
-      expect(
-        tester.widget<TextField>(find.byType(TextField)).controller!.text,
-        '# Local generated draft',
-      );
-      await tester.scrollUntilVisible(
-        find.textContaining('Draft generated'),
-        150,
-        scrollable: find
-            .descendant(
-              of: find.byType(ListView),
-              matching: find.byType(Scrollable),
-            )
-            .first,
-        maxScrolls: 30,
-      );
-      await tester.pump();
-      expect(find.textContaining('Draft generated'), findsOneWidget);
-      expect(c.calls, 1);
-      expect(tester.takeException(), isNull);
-    },
-  );
+  testWidgets('draft opens immediately and generates only on request', (
+    tester,
+  ) async {
+    final c = _DraftController();
+    addTearDown(c.dispose);
+    await _mount(tester, c);
+    expect(c.calls, 0);
+    await tester.tap(find.text('Generate draft'));
+    await tester.pump();
+    expect(c.calls, 1);
+    c.response.complete(c.result());
+    await tester.pumpAndSettle();
+    expect(
+      tester.widget<TextField>(find.byType(TextField)).controller!.text,
+      '# Local generated draft',
+    );
+    await tester.scrollUntilVisible(
+      find.textContaining('Draft generated'),
+      150,
+      scrollable: find
+          .descendant(
+            of: find.byType(ListView),
+            matching: find.byType(Scrollable),
+          )
+          .first,
+      maxScrolls: 30,
+    );
+    await tester.pump();
+    expect(find.textContaining('Draft generated'), findsOneWidget);
+    expect(c.calls, 1);
+    expect(tester.takeException(), isNull);
+  });
   testWidgets('generation never overwrites edits made while it runs', (
     tester,
   ) async {
     final c = _DraftController();
     addTearDown(c.dispose);
     await _mount(tester, c);
+    await tester.tap(find.text('Generate draft'));
+    await tester.pump();
     await tester.enterText(find.byType(TextField), 'My own edited draft');
     c.response.complete(c.result());
     await tester.pumpAndSettle();
@@ -125,6 +133,8 @@ void main() {
     final c = _DraftController();
     addTearDown(c.dispose);
     await _mount(tester, c);
+    await tester.tap(find.text('Generate draft'));
+    await tester.pump();
     final before = tester
         .widget<TextField>(find.byType(TextField))
         .controller!
@@ -139,11 +149,67 @@ void main() {
     expect(find.textContaining('Return and rebuild'), findsWidgets);
     expect(tester.takeException(), isNull);
   });
+  testWidgets(
+    'Stop preserves edits and rejects a late draft without restarting',
+    (tester) async {
+      final c = _DraftController();
+      addTearDown(c.dispose);
+      await _mount(tester, c);
+      await tester.tap(find.text('Generate draft'));
+      await tester.pump();
+      await tester.enterText(find.byType(TextField), 'My preserved edits');
+      await tester.ensureVisible(
+        find.byKey(const Key('stop-draft-generation')),
+      );
+      await tester.tap(find.byKey(const Key('stop-draft-generation')));
+      await tester.pumpAndSettle();
+      expect(c.cancellationRevision, 1);
+      expect(c.busy, isFalse);
+      c.response.complete(c.result());
+      await tester.pumpAndSettle();
+      expect(
+        tester.widget<TextField>(find.byType(TextField)).controller!.text,
+        'My preserved edits',
+      );
+      expect(c.calls, 1);
+      expect(tester.takeException(), isNull);
+    },
+  );
+  testWidgets(
+    'leaving a draft in the full app cancels without notifying a locked widget tree',
+    (tester) async {
+      final c = _DraftController();
+      addTearDown(c.dispose);
+      await tester.pumpWidget(AyumitraApp(controller: c));
+      await tester.pumpAndSettle();
+      final navigator = tester.state<NavigatorState>(find.byType(Navigator));
+      unawaited(
+        navigator.push(
+          MaterialPageRoute<void>(
+            builder: (_) => SecondOpinionScreen(controller: c),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Generate draft'));
+      await tester.pump();
+      navigator.pop();
+      await tester.pumpAndSettle();
+      expect(c.cancellationRevision, 1);
+      expect(c.busy, isFalse);
+      c.response.complete(c.result());
+      await tester.pump();
+      expect(tester.takeException(), isNull);
+    },
+  );
   testWidgets('disposed generation result is ignored', (tester) async {
     final c = _DraftController();
     addTearDown(c.dispose);
     await _mount(tester, c);
+    await tester.tap(find.text('Generate draft'));
+    await tester.pump();
     await tester.pumpWidget(const SizedBox());
+    expect(c.cancellationRevision, 1);
     c.response.complete(c.result());
     await tester.pump();
     expect(tester.takeException(), isNull);

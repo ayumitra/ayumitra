@@ -39,6 +39,7 @@ import 'services/app_lock.dart';
 import 'services/automatic_models.dart';
 import 'services/local_embeddings.dart';
 import 'services/local_processing.dart';
+import 'services/task_cancellation.dart';
 import 'services/camera_cache.dart';
 import 'services/local_intelligence.dart';
 import 'services/local_research.dart';
@@ -117,6 +118,12 @@ String webSearchFailureReason(Object e) {
   return 'unexpected error';
 }
 
+class _TaskScope {
+  _TaskScope(this.token);
+  final CancellationToken? token;
+  final reports = <(String, String)>{};
+}
+
 class AppController extends ChangeNotifier implements VitalsHost {
   AppController({
     LocalIntelligence? intelligence,
@@ -181,6 +188,7 @@ class AppController extends ChangeNotifier implements VitalsHost {
   List<VitalEntry> get vitals => vitalsFor(data.vitals, activeProfileId ?? '');
 
   Future<void> persistCompanionData(VaultData next) async {
+    checkTaskActive();
     if (isPreview) {
       data = next;
       notifyListeners();
@@ -320,6 +328,72 @@ class AppController extends ChangeNotifier implements VitalsHost {
   bool loaded = false;
   @override
   bool busy = false;
+
+  static final _taskZoneKey = Object();
+  _TaskScope? _activeTask;
+  bool _cancelling = false;
+  int _cancellationRevision = 0;
+  _TaskScope? get _scopedTask => Zone.current[_taskZoneKey] as _TaskScope?;
+  bool get canCancelTask =>
+      busy && _activeTask?.token != null && !_activeTask!.token!.isCancelled;
+  bool get cancellingTask => busy && _cancelling;
+  int get cancellationRevision => _cancellationRevision;
+
+  /// A task keeps its own token across async gaps, even after a new task starts.
+  void checkTaskActive() {
+    if (_closed) throw const TaskCancelled();
+    _scopedTask?.token?.throwIfCancelled();
+  }
+
+  Future<T> taskCall<T>(Future<T> Function() operation) async {
+    checkTaskActive();
+    final token = _scopedTask?.token;
+    final pending = operation();
+    final result = token == null ? await pending : await token.race(pending);
+    checkTaskActive();
+    return result;
+  }
+
+  Future<T> _withoutCancellation<T>(Future<T> Function() operation) =>
+      runZoned(operation, zoneValues: {_taskZoneKey: _TaskScope(null)});
+
+  /// Stops actual decoding/requests. Cleanup retains ownership of busy so an
+  /// in-flight file transaction cannot race a newer task's persisted state.
+  void cancelCurrentTask({bool notify = true}) {
+    final token = _activeTask?.token;
+    if (!busy || token == null || token.isCancelled) return;
+    _cancellationRevision++;
+    _cancelling = true;
+    token.cancel();
+    unawaited(
+      Future<void>.sync(
+        intelligence.cancelGeneration,
+      ).then<void>((_) {}, onError: (Object _, StackTrace _) {}),
+    );
+    _frontierGateway.cancelActiveRequests();
+    activity = 'Stopping…';
+    if (notify && !_closed) notifyListeners();
+  }
+
+  /// Browser imports use the same task lifetime and cancellation boundaries.
+  Future<void> runCancellableTask(
+    String label,
+    Future<void> Function() task, {
+    bool background = false,
+    String? failureMessage,
+  }) => _work(
+    label,
+    task,
+    background: background,
+    cancellable: true,
+    failureMessage: failureMessage,
+  );
+
+  void trackTaskReport(Report report) {
+    checkTaskActive();
+    _scopedTask?.reports.add((report.profileId, report.id));
+  }
+
   final messages = <ChatEntry>[];
   bool get isPreview => false;
   bool get automaticModelsSupported =>
@@ -335,6 +409,13 @@ class AppController extends ChangeNotifier implements VitalsHost {
 
   @override
   void dispose() {
+    _activeTask?.token?.cancel();
+    unawaited(
+      Future<void>.sync(
+        intelligence.cancelGeneration,
+      ).then<void>((_) {}, onError: (Object _, StackTrace _) {}),
+    );
+    _frontierGateway.cancelActiveRequests();
     _closed = true;
     _appLock?.removeListener(_lockChanged);
     _processingTimer?.cancel();
@@ -424,7 +505,9 @@ class AppController extends ChangeNotifier implements VitalsHost {
     )) {
       final vectors = <String, List<double>>{};
       for (final line in report.lines) {
-        vectors[line.id] = await embeddings.embed(line.text, document: true);
+        vectors[line.id] = await taskCall(
+          () => embeddings.embed(line.text, document: true),
+        );
       }
       await _replace(
         report.copy(vectors: vectors, embeddingVersion: embeddings.version),
@@ -436,7 +519,9 @@ class AppController extends ChangeNotifier implements VitalsHost {
           m.embeddingVersion != embeddings.version,
     )) {
       final indexed = memory.copy(
-        vector: await embeddings.embed(memory.text, document: true),
+        vector: await taskCall(
+          () => embeddings.embed(memory.text, document: true),
+        ),
         embeddingVersion: embeddings.version,
       );
       await _commit(
@@ -555,6 +640,9 @@ class AppController extends ChangeNotifier implements VitalsHost {
   /// and shows [label] as running. Shared with the browser replica so both
   /// surfaces narrate identical steps.
   void announceStep(String label) {
+    // A stopped task no longer narrates: its late steps must not overwrite
+    // the visible Stopping state set by cancelCurrentTask.
+    checkTaskActive();
     if (activity.isNotEmpty && (stepLog.isEmpty || stepLog.last != activity)) {
       stepLog.add(activity);
       while (stepLog.length > 20) {
@@ -653,7 +741,8 @@ class AppController extends ChangeNotifier implements VitalsHost {
       cameraCache = await CameraCache.forDevice();
       parser = LocalParser(
         Directory('${(await getTemporaryDirectory()).path}/ayumitra-ocr'),
-        transcribe: intelligence.transcribeImage,
+        transcribe: (bytes) =>
+            taskCall(() => intelligence.transcribeImage(bytes)),
       );
       await parser.cleanScratch();
       if (Platform.isIOS) {
@@ -736,9 +825,13 @@ class AppController extends ChangeNotifier implements VitalsHost {
   }
 
   Future<void> _commit(VaultData next) async {
+    checkTaskActive();
     await vault.save(next);
+    // The atomic save was authorized before Stop. Mirror it before unwinding
+    // so a following task cannot overwrite a successfully saved user turn.
     data = next;
-    notifyListeners();
+    if (!_closed) notifyListeners();
+    checkTaskActive();
   }
 
   Future<void> _replace(Report report) => _commit(
@@ -757,31 +850,92 @@ class AppController extends ChangeNotifier implements VitalsHost {
     String label,
     Future<void> Function() task, {
     bool background = false,
+    bool cancellable = false,
+    Iterable<(String, String)> cancelledReports = const [],
     String? failureMessage,
   }) async {
-    if (busy) return;
+    if (busy || _closed) return;
+    final scope = _TaskScope(cancellable ? CancellationToken() : null);
+    scope.reports.addAll(cancelledReports);
+    _activeTask = scope;
     busy = true;
+    _cancelling = false;
     stepLog.clear();
     activity = label;
     failure = null;
     notifyListeners();
-    final lease = background && !isPreview ? await _processing.acquire() : null;
-    if (lease?.protected == true) processingNotice = null;
-    if (_processing.supported && background && lease?.protected != true) {
-      processingNotice =
-          'Keep Ayumitra open while this task runs. Background processing is unavailable.';
-    }
+    ProcessingLease? lease;
     try {
-      await task();
+      lease = background && !isPreview ? await _processing.acquire() : null;
+      scope.token?.throwIfCancelled();
+      if (lease?.protected == true) processingNotice = null;
+      if (_processing.supported && background && lease?.protected != true) {
+        processingNotice =
+            'Keep Ayumitra open while this task runs. Background processing is unavailable.';
+      }
+      await runZoned(task, zoneValues: {_taskZoneKey: scope});
+      scope.token?.throwIfCancelled();
+    } on TaskCancelled {
+      failure = null;
+      if (!_closed) {
+        restoreConversation();
+        try {
+          await _withoutCancellation(() => _pauseTaskReports(scope.reports));
+        } catch (_) {
+          failure =
+              'Processing stopped, but its paused status could not be saved. Keep Ayumitra open and retry when storage is available.';
+        }
+      }
     } catch (_) {
       failure =
           failureMessage ??
           'This action could not finish locally. Your saved records have been kept; please retry.';
     } finally {
       await lease?.close();
-      busy = false;
-      activity = '';
-      if (!_closed) notifyListeners();
+      if (identical(_activeTask, scope)) {
+        _activeTask = null;
+        _cancelling = false;
+        busy = false;
+        activity = '';
+        if (!_closed) notifyListeners();
+      }
+    }
+  }
+
+  Future<void> _pauseTaskReports(Iterable<(String, String)> reports) async {
+    var next = data;
+    for (final (owner, id) in reports) {
+      if (!next.reports.any((r) => r.id == id && r.profileId == owner)) {
+        continue;
+      }
+      next = pauseReportJob(next, id, owner);
+      next = next.copy(
+        reports: next.reports
+            .map(
+              (r) => r.id == id && r.profileId == owner
+                  ? r.copy(
+                      status: ReportStatus.needsReview,
+                      notice:
+                          'Processing paused. Your original and saved text are kept. Choose Retry to continue.',
+                    )
+                  : r,
+            )
+            .toList(),
+      );
+    }
+    try {
+      if (!identical(next, data)) {
+        try {
+          await persistCompanionData(next);
+        } catch (_) {
+          // Prevent the timer from restarting stopped work in this process,
+          // even if storage could not make the pause durable across restart.
+          data = next;
+          rethrow;
+        }
+      }
+    } finally {
+      await _releaseFinishedQueue();
     }
   }
 
@@ -804,6 +958,7 @@ class AppController extends ChangeNotifier implements VitalsHost {
         embeddings.available &&
         data.processingJobs.any(
           (j) =>
+              !j.paused &&
               j.attempts < 3 &&
               data.profiles.any((p) => p.id == j.profileId) &&
               data.reports.any(
@@ -831,6 +986,7 @@ class AppController extends ChangeNotifier implements VitalsHost {
       await _releaseFinishedQueue();
       return;
     }
+    final cancellation = cancellationRevision;
     _checkingJobs = true;
     try {
       _pendingJobLease ??= await _processing.acquire();
@@ -843,8 +999,9 @@ class AppController extends ChangeNotifier implements VitalsHost {
         if (!_closed) notifyListeners();
         return;
       }
-      for (final job in due) {
-        if (busy || _closed) break;
+      for (var index = 0; index < due.length; index++) {
+        final job = due[index];
+        if (busy || _closed || cancellationRevision != cancellation) break;
         final report = data.reports
             .where((r) => r.id == job.reportId && r.profileId == job.profileId)
             .firstOrNull;
@@ -853,6 +1010,10 @@ class AppController extends ChangeNotifier implements VitalsHost {
           'Retrying an unfinished report locally…',
           () => _process(report, backgroundJob: true),
           background: true,
+          cancellable: true,
+          cancelledReports: due
+              .skip(index)
+              .map((j) => (j.profileId, j.reportId)),
         );
       }
       await _releaseFinishedQueue();
@@ -1171,67 +1332,82 @@ class AppController extends ChangeNotifier implements VitalsHost {
   );
 
   Future<void> _appendTurn(ChatEntry entry) async {
-    if (activeSession == null) await _newConversation();
-    final session = activeSession!;
-    final now = DateTime.now();
-    final turn = ConversationTurn(
-      id: _uuid.v4(),
-      role: entry.isUser ? 'user' : 'assistant',
-      text: entry.text,
-      createdAt: now,
-      reportCitations: entry.hits.map((h) => h.citation).toList(),
-      webSources: entry.web
-          .map(
-            (s) => ConversationWebSource(
-              id: s.id,
-              title: s.title,
-              url: s.url.toString(),
-              excerpt: s.excerpt,
-              retrievedAt: s.retrievedAt,
-            ),
-          )
-          .toList(),
-    );
-    final title =
-        (session.title == 'New conversation' ||
-                !session.turns.any((t) => t.role == 'user')) &&
-            entry.isUser
-        ? entry.text.replaceAll(RegExp(r'\s+'), ' ').trim()
-        : session.title;
-    final next = session.copy(
-      title: title.length > 64 ? '${title.substring(0, 61)}…' : title,
-      updatedAt: now,
-      turns: [...session.turns, turn],
-    );
-    final rebuilt = buildConversationMemory(next);
-    final priorMemory = data.memories
-        .where((m) => m.sessionId == next.id && m.profileId == next.profileId)
-        .firstOrNull;
-    final memory = priorMemory?.text == rebuilt.text
-        ? priorMemory!.copy(updatedAt: now)
-        : rebuilt;
-    await _commit(
-      data.copy(
-        sessions: data.sessions
+    checkTaskActive();
+    Future<ConversationMemory> persistTurn() async {
+      if (activeSession == null) await _newConversation();
+      final session = activeSession!;
+      final now = DateTime.now();
+      final turn = ConversationTurn(
+        id: _uuid.v4(),
+        role: entry.isUser ? 'user' : 'assistant',
+        text: entry.text,
+        createdAt: now,
+        reportCitations: entry.hits.map((h) => h.citation).toList(),
+        webSources: entry.web
             .map(
-              (s) =>
-                  s.id == next.id && s.profileId == next.profileId ? next : s,
+              (s) => ConversationWebSource(
+                id: s.id,
+                title: s.title,
+                url: s.url.toString(),
+                excerpt: s.excerpt,
+                retrievedAt: s.retrievedAt,
+              ),
             )
             .toList(),
-        memories: [
-          ...data.memories.where(
-            (m) => !(m.sessionId == next.id && m.profileId == next.profileId),
-          ),
-          if (memory.text.isNotEmpty) memory,
-        ],
-      ),
-    );
-    restoreConversation();
+      );
+      final title =
+          (session.title == 'New conversation' ||
+                  !session.turns.any((t) => t.role == 'user')) &&
+              entry.isUser
+          ? entry.text.replaceAll(RegExp(r'\s+'), ' ').trim()
+          : session.title;
+      final next = session.copy(
+        title: title.length > 64 ? '${title.substring(0, 61)}…' : title,
+        updatedAt: now,
+        turns: [...session.turns, turn],
+      );
+      final rebuilt = buildConversationMemory(next);
+      final priorMemory = data.memories
+          .where((m) => m.sessionId == next.id && m.profileId == next.profileId)
+          .firstOrNull;
+      final memory = priorMemory?.text == rebuilt.text
+          ? priorMemory!.copy(updatedAt: now)
+          : rebuilt;
+      await _commit(
+        data.copy(
+          sessions: data.sessions
+              .map(
+                (s) =>
+                    s.id == next.id && s.profileId == next.profileId ? next : s,
+              )
+              .toList(),
+          memories: [
+            ...data.memories.where(
+              (m) =>
+                  !(m.sessionId == memory.sessionId &&
+                      m.profileId == memory.profileId),
+            ),
+            if (memory.text.isNotEmpty) memory,
+          ],
+        ),
+      );
+      restoreConversation();
+      return memory;
+    }
+
+    // A submitted user turn, including its first conversation, is one saved
+    // intent. Stop interrupts the answer, not this small persistence step.
+    final memory = entry.isUser
+        ? await _withoutCancellation(persistTurn)
+        : await persistTurn();
+    checkTaskActive();
     // Keyword memory is durable before embedding. An interrupted embedding never loses a turn.
     if (entry.isUser && embeddings.available && memory.text.isNotEmpty) {
       try {
         final indexed = memory.copy(
-          vector: await embeddings.embed(memory.text, document: true),
+          vector: await taskCall(
+            () => embeddings.embed(memory.text, document: true),
+          ),
           embeddingVersion: embeddings.version,
         );
         await _commit(
@@ -1251,44 +1427,50 @@ class AppController extends ChangeNotifier implements VitalsHost {
     }
   }
 
-  Future<void> importFile(PlatformFile file) =>
-      _work('Saving and reading your report…', () async {
-        try {
-          final ownerId = profile?.id;
-          if (ownerId == null || !libraryImportOwnerIsCurrent) return;
-          final ext = (file.extension ?? '').toLowerCase();
-          if (!{'pdf', 'png', 'jpg', 'jpeg', 'txt'}.contains(ext) ||
-              (await file.length() ?? 0) > 30 * 1024 * 1024) {
-            failure = 'Choose a PDF, PNG, JPG, or text file up to 30 MB.';
-            return;
-          }
-          if (!{'file', 'content'}.contains(file.uri.scheme)) {
-            failure = 'Choose a file stored on this device.';
-            return;
-          }
-          final buffer = BytesBuilder(copy: false);
-          await for (final part in file.readAsByteStream()) {
-            buffer.add(part);
-            if (buffer.length > 30 * 1024 * 1024) {
-              throw const FormatException('Report is too large.');
-            }
-          }
-          final bytes = buffer.takeBytes();
-          if (profile?.id != ownerId || !libraryImportOwnerIsCurrent) return;
-          await _importBytes(
-            file.name,
-            ext,
-            bytes,
-            onSaved: () => pickerCache.remove(file),
-          );
-        } finally {
-          await pickerCache.remove(file);
+  Future<void> importFile(PlatformFile file) => _work(
+    'Saving and reading your report…',
+    () async {
+      try {
+        final ownerId = profile?.id;
+        if (ownerId == null || !libraryImportOwnerIsCurrent) return;
+        final ext = (file.extension ?? '').toLowerCase();
+        if (!{'pdf', 'png', 'jpg', 'jpeg', 'txt'}.contains(ext) ||
+            (await file.length() ?? 0) > 30 * 1024 * 1024) {
+          failure = 'Choose a PDF, PNG, JPG, or text file up to 30 MB.';
+          return;
         }
-      }, background: true);
+        if (!{'file', 'content'}.contains(file.uri.scheme)) {
+          failure = 'Choose a file stored on this device.';
+          return;
+        }
+        final buffer = BytesBuilder(copy: false);
+        await for (final part in file.readAsByteStream()) {
+          buffer.add(part);
+          if (buffer.length > 30 * 1024 * 1024) {
+            throw const FormatException('Report is too large.');
+          }
+        }
+        final bytes = buffer.takeBytes();
+        if (profile?.id != ownerId || !libraryImportOwnerIsCurrent) return;
+        await _importBytes(
+          file.name,
+          ext,
+          bytes,
+          onSaved: () => pickerCache.remove(file),
+        );
+      } finally {
+        await pickerCache.remove(file);
+      }
+    },
+    background: true,
+    cancellable: true,
+  );
 
   Future<void> importSample(Uint8List bytes) => _work(
     'Adding a synthetic example…',
     () => _importBytes('Synthetic blood report.txt', 'txt', bytes),
+    background: true,
+    cancellable: true,
   );
 
   /// Photograph a report with the rear camera into the active profile's vault.
@@ -1297,57 +1479,62 @@ class AppController extends ChangeNotifier implements VitalsHost {
 
   Future<void> captureReportPages({
     Future<bool> Function(int)? onAnotherPage,
-  }) => _work('Capturing your report pages…', () async {
-    final owner = profile;
-    if (owner == null) return;
-    final pages = <XFile>[];
-    await _secure.write(
-      key: cameraPendingKey,
-      value: jsonEncode({'profileId': owner.id, 'paths': <String>[]}),
-    );
-    for (var i = 0; i < CameraPages.maxPages; i++) {
-      XFile? photo;
-      try {
-        photo = await _imagePicker.pickImage(
-          source: ImageSource.camera,
-          preferredCameraDevice: CameraDevice.rear,
-          requestFullMetadata: false,
-        );
-      } on PlatformException catch (error) {
-        if (pages.isEmpty) {
-          await _secure.delete(key: cameraPendingKey);
-          failure = error.code.toLowerCase().contains('denied')
-              ? 'Camera permission is off. Enable it in device settings, or attach a file.'
-              : 'The camera could not open. Try again or attach a photo.';
-          return;
-        }
-        break; // Earlier pages are still saved if another capture fails.
-      }
-      if (photo == null) break;
-      if (!cameraCache.ownsPath(photo.path)) {
-        throw StateError('Invalid camera cache.');
-      }
-      pages.add(photo);
+  }) => _work(
+    'Capturing your report pages…',
+    () async {
+      final owner = profile;
+      if (owner == null) return;
+      final pages = <XFile>[];
       await _secure.write(
         key: cameraPendingKey,
-        value: jsonEncode({
-          'profileId': owner.id,
-          'paths': pages.map((p) => p.path).toList(),
-        }),
+        value: jsonEncode({'profileId': owner.id, 'paths': <String>[]}),
       );
-      if (pages.length == CameraPages.maxPages ||
-          onAnotherPage == null ||
-          !await onAnotherPage(pages.length)) {
-        break;
+      for (var i = 0; i < CameraPages.maxPages; i++) {
+        XFile? photo;
+        try {
+          photo = await _imagePicker.pickImage(
+            source: ImageSource.camera,
+            preferredCameraDevice: CameraDevice.rear,
+            requestFullMetadata: false,
+          );
+        } on PlatformException catch (error) {
+          if (pages.isEmpty) {
+            await _secure.delete(key: cameraPendingKey);
+            failure = error.code.toLowerCase().contains('denied')
+                ? 'Camera permission is off. Enable it in device settings, or attach a file.'
+                : 'The camera could not open. Try again or attach a photo.';
+            return;
+          }
+          break; // Earlier pages are still saved if another capture fails.
+        }
+        if (photo == null) break;
+        if (!cameraCache.ownsPath(photo.path)) {
+          throw StateError('Invalid camera cache.');
+        }
+        pages.add(photo);
+        await _secure.write(
+          key: cameraPendingKey,
+          value: jsonEncode({
+            'profileId': owner.id,
+            'paths': pages.map((p) => p.path).toList(),
+          }),
+        );
+        if (pages.length == CameraPages.maxPages ||
+            onAnotherPage == null ||
+            !await onAnotherPage(pages.length)) {
+          break;
+        }
       }
-    }
-    if (pages.isEmpty) {
-      await _secure.delete(key: cameraPendingKey);
-      await cameraCache.clean();
-      return;
-    }
-    await _saveCameraPages(pages, owner.id);
-  }, background: true);
+      if (pages.isEmpty) {
+        await _secure.delete(key: cameraPendingKey);
+        await cameraCache.clean();
+        return;
+      }
+      await _saveCameraPages(pages, owner.id);
+    },
+    background: true,
+    cancellable: true,
+  );
 
   Future<void> _saveCameraPages(
     List<XFile> pages,
@@ -1415,48 +1602,52 @@ class AppController extends ChangeNotifier implements VitalsHost {
     );
   }
 
-  Future<void> recoverCameraCapture() =>
-      _work('Recovering your camera report…', () async {
-        final journal = await _secure.read(key: cameraPendingKey);
-        final lost = await _imagePicker.retrieveLostData();
-        final lostFiles =
-            lost.files ?? (lost.file == null ? <XFile>[] : [lost.file!]);
-        if (journal == null) {
-          for (final file in lostFiles) {
-            await cameraCache.remove(file.path);
-          }
-          return;
+  Future<void> recoverCameraCapture() => _work(
+    'Recovering your camera report…',
+    () async {
+      final journal = await _secure.read(key: cameraPendingKey);
+      final lost = await _imagePicker.retrieveLostData();
+      final lostFiles =
+          lost.files ?? (lost.file == null ? <XFile>[] : [lost.file!]);
+      if (journal == null) {
+        for (final file in lostFiles) {
+          await cameraCache.remove(file.path);
         }
-        final pending = jsonDecode(journal);
-        if (pending is! Map || pending['profileId'] is! String) {
-          throw const FormatException('Invalid camera recovery journal.');
+        return;
+      }
+      final pending = jsonDecode(journal);
+      if (pending is! Map || pending['profileId'] is! String) {
+        throw const FormatException('Invalid camera recovery journal.');
+      }
+      final owner = pending['profileId'] as String;
+      final paths = <String>{
+        if (pending['path'] is String)
+          pending['path'], // prior single-photo journal
+        if (pending['paths'] is List)
+          ...((pending['paths'] as List).whereType<String>()),
+        ...lostFiles.map((file) => file.path),
+      };
+      if (!data.profiles.any((p) => p.id == owner)) {
+        for (final path in paths) {
+          await cameraCache.remove(path);
         }
-        final owner = pending['profileId'] as String;
-        final paths = <String>{
-          if (pending['path'] is String)
-            pending['path'], // prior single-photo journal
-          if (pending['paths'] is List)
-            ...((pending['paths'] as List).whereType<String>()),
-          ...lostFiles.map((file) => file.path),
-        };
-        if (!data.profiles.any((p) => p.id == owner)) {
-          for (final path in paths) {
-            await cameraCache.remove(path);
-          }
-          await _secure.delete(key: cameraPendingKey);
-          return;
+        await _secure.delete(key: cameraPendingKey);
+        return;
+      }
+      final pages = paths.where(cameraCache.ownsPath).map(XFile.new).toList();
+      if (pages.isEmpty) {
+        await _secure.delete(key: cameraPendingKey);
+        if (lost.exception != null) {
+          failure =
+              'The camera was interrupted. Please capture the report again.';
         }
-        final pages = paths.where(cameraCache.ownsPath).map(XFile.new).toList();
-        if (pages.isEmpty) {
-          await _secure.delete(key: cameraPendingKey);
-          if (lost.exception != null) {
-            failure =
-                'The camera was interrupted. Please capture the report again.';
-          }
-          return;
-        }
-        await _saveCameraPages(pages, owner, recovered: true);
-      }, background: true);
+        return;
+      }
+      await _saveCameraPages(pages, owner, recovered: true);
+    },
+    background: true,
+    cancellable: true,
+  );
 
   Future<void> _importBytes(
     String name,
@@ -1489,19 +1680,24 @@ class AppController extends ChangeNotifier implements VitalsHost {
       eventDate: DateTime(importedAt.year, importedAt.month, importedAt.day),
       dateIsFallback: true,
     );
-    await vault.saveOriginal(report, bytes);
-    await _commit(
-      enqueueReportJob(
-        data.copy(reports: [...data.reports, report]),
-        report.id,
-        report.profileId,
-        DateTime.now(),
-      ),
-    );
+    trackTaskReport(report);
+    await _withoutCancellation(() async {
+      await vault.saveOriginal(report, bytes);
+      await _commit(
+        enqueueReportJob(
+          data.copy(reports: [...data.reports, report]),
+          report.id,
+          report.profileId,
+          DateTime.now(),
+        ),
+      );
+      await onSaved?.call();
+    });
+    checkTaskActive();
     if (!isPreview && intelligence.available && embeddings.available) {
       _pendingJobLease ??= await _processing.acquire();
     }
-    await onSaved?.call();
+    checkTaskActive();
     if (process) {
       await _process(report, backgroundJob: _libraryImport || backgroundJob);
     } else {
@@ -1514,22 +1710,29 @@ class AppController extends ChangeNotifier implements VitalsHost {
     }
   }
 
-  Future<void> retry(Report report) =>
-      _work('Reading the saved report…', () async {
-        if (report.profileId != activeProfileId) {
-          throw StateError('Profile access denied.');
-        }
-        await _commit(
-          enqueueReportJob(
-            data,
-            report.id,
-            report.profileId,
-            DateTime.now(),
-            resetAttempts: true,
-          ),
-        );
-        await _process(report);
-      }, background: true);
+  Future<void> retry(Report report) => _work(
+    'Reading the saved report…',
+    () async {
+      if (report.profileId != activeProfileId) {
+        throw StateError('Profile access denied.');
+      }
+      await _commit(
+        enqueueReportJob(
+          data,
+          report.id,
+          report.profileId,
+          DateTime.now(),
+          resetAttempts: true,
+        ),
+      );
+      await _process(report);
+    },
+    background: true,
+    cancellable: true,
+    cancelledReports: [
+      if (report.profileId == activeProfileId) (report.profileId, report.id),
+    ],
+  );
 
   Future<void> _process(Report report, {bool backgroundJob = false}) async {
     final stored = data.reports
@@ -1537,6 +1740,7 @@ class AppController extends ChangeNotifier implements VitalsHost {
         .firstOrNull;
     if (stored == null) throw StateError('Report access denied.');
     report = stored;
+    trackTaskReport(report);
     final owner = backgroundJob
         ? data.profiles.where((p) => p.id == report.profileId).firstOrNull
         : profile;
@@ -1555,7 +1759,7 @@ class AppController extends ChangeNotifier implements VitalsHost {
       // reset the retry cap. Success removes the job; failure keeps its backoff.
       await _commit(failReportJob(data, report.id, owner.id, DateTime.now()));
     }
-    var next = report.copy(status: ReportStatus.processing, clearSummary: true);
+    var next = report.copy(status: ReportStatus.processing);
     await _replace(next);
     try {
       final bytes = await vault.readOriginal(report, owner.id);
@@ -1567,7 +1771,7 @@ class AppController extends ChangeNotifier implements VitalsHost {
       );
       List<SourceLine> lines;
       try {
-        lines = await parser.parse(report, bytes);
+        lines = await taskCall(() => parser.parse(report, bytes));
       } finally {
         intelligence.visionProfileContext = previousContext;
       }
@@ -1604,7 +1808,9 @@ class AppController extends ChangeNotifier implements VitalsHost {
         announceStep('Building the local search index…');
         final vectors = <String, List<double>>{};
         for (final line in lines) {
-          vectors[line.id] = await embeddings.embed(line.text, document: true);
+          vectors[line.id] = await taskCall(
+            () => embeddings.embed(line.text, document: true),
+          );
         }
         next = next.copy(
           vectors: vectors,
@@ -1628,17 +1834,9 @@ class AppController extends ChangeNotifier implements VitalsHost {
             : 'Text is searchable locally. Local Markdown notes will be prepared when the assistant model is ready.',
       );
       await _replace(next);
-      if (intelligence.available) {
-        await _summarizeReport(next, owner);
-      }
-      final completed = data.reports
-          .where((r) => r.id == report.id && r.profileId == owner.id)
-          .first;
-      final finished =
-          intelligence.available &&
-          embeddings.available &&
-          !hasSparseText &&
-          completed.summaryMarkdown?.isNotEmpty == true;
+      final notesGenerated =
+          intelligence.available && await _summarizeReport(next, owner);
+      final finished = notesGenerated && embeddings.available && !hasSparseText;
       if (finished) await _commit(finishReportJob(data, report.id, owner.id));
       if (!backgroundJob) {
         await _appendTurn(
@@ -1651,7 +1849,10 @@ class AppController extends ChangeNotifier implements VitalsHost {
           ),
         );
       }
+    } on TaskCancelled {
+      rethrow;
     } catch (_) {
+      checkTaskActive();
       await _replace(
         next.copy(
           status: ReportStatus.needsReview,
@@ -1664,7 +1865,7 @@ class AppController extends ChangeNotifier implements VitalsHost {
     }
   }
 
-  Future<void> _summarizeReport(Report report, Profile owner) async {
+  Future<bool> _summarizeReport(Report report, Profile owner) async {
     announceStep('Writing report notes as Markdown…');
     final output = await generateReportMarkdown(
       contextualIntelligence(intelligence, owner),
@@ -1688,7 +1889,7 @@ class AppController extends ChangeNotifier implements VitalsHost {
               'Report notes could not be linked to their sources. The original is saved and processing will retry.',
         ),
       );
-      return;
+      return false;
     }
     await _replace(
       report.copy(
@@ -1697,6 +1898,7 @@ class AppController extends ChangeNotifier implements VitalsHost {
         notice: report.notice,
       ),
     );
+    return true;
   }
 
   Future<void> correctFact(
@@ -1740,7 +1942,10 @@ class AppController extends ChangeNotifier implements VitalsHost {
       final query = rewritten.trim();
       if (query.isEmpty || query.length > 180) return null;
       return query;
+    } on TaskCancelled {
+      rethrow;
     } catch (_) {
+      checkTaskActive();
       return null;
     }
   }
@@ -1950,51 +2155,62 @@ class AppController extends ChangeNotifier implements VitalsHost {
     final request =
         session.turns.where((t) => t.role == 'user').lastOrNull?.text ??
         'Prepare a medical handover';
-    final backend = useFrontierForChat && !isPreview
-        ? _frontierBackend(await prepareFrontierRequest(request))
-        : intelligence;
     SecondOpinionPack? result;
-    await _work('Preparing your draft…', () async {
-      final hits = reportContextFor(request, comprehensive: true);
-      final rows = _documentEvidence(request, hits);
-      final readings = vitalsSummaryFor(data.vitals, owner.id, maxPerKind: 3);
-      if (readings.isNotEmpty) {
-        rows.add({
-          'sourceId': 'vitals',
-          'text': readings,
-          'label': 'User-recorded measurements, with their dates',
-        });
-      }
-      if (owner.history.isNotEmpty) {
-        rows.add({
-          'sourceId': 'user-history',
-          'text': owner.history,
-          'label': 'User-provided background',
-        });
-      }
-      final output = await generateAgenticDraft(
-        contextualIntelligence(backend, owner, requireActiveProfile: true),
-        latestRequest: request,
-        evidence: rows,
-        dateOfBirth: owner.dateOfBirth?.toIso8601String().substring(0, 10),
-        status: announceStep,
-      );
-      if (activeProfileId != owner.id || activeSessionId != session.id) return;
-      result = output == null
-          ? fallback
-          : SecondOpinionPack(
-              profileId: owner.id,
-              sessionId: session.id,
-              markdown: output,
-              reportIds: hits
-                  .where((h) => output.contains('[${h.citation}]'))
-                  .map((h) => h.report.id)
-                  .toSet()
-                  .toList(),
-              truncated: fallback.truncated,
-              identifierHints: identifierHints(output, owner),
-            );
-    }, background: true);
+    await _work(
+      useFrontierForChat && !isPreview
+          ? 'Preparing your draft with your selected cloud model…'
+          : 'Preparing your draft on this phone…',
+      () async {
+        final backend = useFrontierForChat && !isPreview
+            ? _frontierBackend(
+                await taskCall(() => prepareFrontierRequest(request)),
+              )
+            : intelligence;
+        checkTaskActive();
+        final hits = reportContextFor(request, comprehensive: true);
+        final rows = _documentEvidence(request, hits);
+        final readings = vitalsSummaryFor(data.vitals, owner.id, maxPerKind: 3);
+        if (readings.isNotEmpty) {
+          rows.add({
+            'sourceId': 'vitals',
+            'text': readings,
+            'label': 'User-recorded measurements, with their dates',
+          });
+        }
+        if (owner.history.isNotEmpty) {
+          rows.add({
+            'sourceId': 'user-history',
+            'text': owner.history,
+            'label': 'User-provided background',
+          });
+        }
+        final output = await generateAgenticDraft(
+          contextualIntelligence(backend, owner, requireActiveProfile: true),
+          latestRequest: request,
+          evidence: rows,
+          dateOfBirth: owner.dateOfBirth?.toIso8601String().substring(0, 10),
+          status: announceStep,
+        );
+        if (activeProfileId != owner.id || activeSessionId != session.id) {
+          return;
+        }
+        if (output == null) return;
+        result = SecondOpinionPack(
+          profileId: owner.id,
+          sessionId: session.id,
+          markdown: output,
+          reportIds: hits
+              .where((h) => output.contains('[${h.citation}]'))
+              .map((h) => h.report.id)
+              .toSet()
+              .toList(),
+          truncated: fallback.truncated,
+          identifierHints: identifierHints(output, owner),
+        );
+      },
+      background: true,
+      cancellable: true,
+    );
     return result;
   }
 
@@ -2407,6 +2623,7 @@ class AppController extends ChangeNotifier implements VitalsHost {
   }) => DelegatingIntelligence(
     isAvailable: () =>
         !_closed &&
+        !(_scopedTask?.token?.isCancelled ?? false) &&
         backend.available &&
         data.profiles.any((p) => p.id == owner.id) &&
         (!requireActiveProfile || profile?.id == owner.id),
@@ -2439,7 +2656,9 @@ class AppController extends ChangeNotifier implements VitalsHost {
         'currentWeight': context['currentWeight'],
         'currentHeight': context['currentHeight'],
       });
-      final output = await backend.generate(instruction, jsonEncode(payload));
+      final output = await taskCall(
+        () => backend.generate(instruction, jsonEncode(payload)),
+      );
       if (_closed ||
           !data.profiles.any((p) => p.id == owner.id) ||
           (requireActiveProfile && profile?.id != owner.id)) {
@@ -2796,7 +3015,7 @@ class AppController extends ChangeNotifier implements VitalsHost {
       List<double>? memoryQuery;
       if (embeddings.available) {
         try {
-          memoryQuery = await embeddings.embed(question);
+          memoryQuery = await taskCall(() => embeddings.embed(question));
         } catch (_) {}
       }
       final memories = retrieveConversationMemories(
@@ -2861,6 +3080,7 @@ class AppController extends ChangeNotifier implements VitalsHost {
           ).hasMatch(question);
       // Reports/web results never re-enter the planner: their instructions cannot
       // request new tool calls. Only the USER request determines this bounded plan.
+      checkTaskActive();
       final planned = await generateValidatedPlan(
         generate: model.generate,
         userRequest: question,
@@ -2869,6 +3089,7 @@ class AppController extends ChangeNotifier implements VitalsHost {
         currentDateTime: requestTime,
         status: announceStep,
       );
+      checkTaskActive();
       final actions = [...planned.actions];
       // Corroboration always stays inside this profile's saved records. A
       // conversational classification cannot skip checking a factual statement.
@@ -2950,6 +3171,7 @@ class AppController extends ChangeNotifier implements VitalsHost {
         announceStep('Searching your saved reports…');
       }
       for (final action in actions) {
+        checkTaskActive();
         if (!model.available) {
           throw StateError('The selected model is no longer available.');
         }
@@ -2959,7 +3181,7 @@ class AppController extends ChangeNotifier implements VitalsHost {
           final query = action.query.isEmpty ? question : action.query;
           if (embeddings.available) {
             try {
-              vector = await embeddings.embed(query);
+              vector = await taskCall(() => embeddings.embed(query));
             } catch (_) {
               toolNotices.add(
                 'Semantic search failed locally; keyword matches were used.',
@@ -3021,7 +3243,7 @@ class AppController extends ChangeNotifier implements VitalsHost {
           }
           announceStep('Looking up public information…');
           try {
-            final found = await webSearch.search(webQuery);
+            final found = await taskCall(() => webSearch.search(webQuery));
             for (final source in found) {
               if (!sources.any((s) => s.url == source.url)) {
                 sources.add(
@@ -3063,7 +3285,7 @@ class AppController extends ChangeNotifier implements VitalsHost {
                     'The selected model is no longer available.',
                   );
                 }
-                return webSearch.search(query);
+                return taskCall(() => webSearch.search(query));
               },
               queryAllowed: (q) =>
                   model.available &&
@@ -3094,6 +3316,7 @@ class AppController extends ChangeNotifier implements VitalsHost {
       if (!model.available) {
         throw StateError('The selected model is no longer available.');
       }
+      checkTaskActive();
       final recordedVitals = vitalsSummaryFor(
         data.vitals,
         owner.id,
@@ -3365,6 +3588,7 @@ class AppController extends ChangeNotifier implements VitalsHost {
       );
     },
     background: true,
+    cancellable: true,
     failureMessage: remote
         ? 'The cloud task could not finish. Your saved records and keys are kept; no fallback model was used.'
         : null,

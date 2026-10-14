@@ -34,6 +34,7 @@ List<ReportProcessingJob> pendingReportJobs(
   final result = <ReportProcessingJob>[];
   for (final job in data.processingJobs) {
     if (!_ownedReportExists(data, job.reportId, job.profileId) ||
+        job.paused ||
         job.attempts >= maxAttempts ||
         job.attempts >= _retryDelays.length ||
         job.nextAttemptAt.isAfter(now) ||
@@ -118,5 +119,20 @@ VaultData failReportJob(
         nextAttemptAt: now.add(_retryDelays[attempts - 1]),
       ),
     ],
+  );
+}
+
+/// A user's Stop survives automatic startup enqueue; only explicit Retry
+/// (resetAttempts) resumes it. Existing progress and attempt history are kept.
+VaultData pauseReportJob(VaultData data, String reportId, String profileId) {
+  _requireOwnedReport(data, reportId, profileId);
+  final queued = enqueueReportJob(data, reportId, profileId, DateTime.now());
+  return queued.copy(
+    processingJobs: queued.processingJobs
+        .map(
+          (job) =>
+              _matches(job, reportId, profileId) ? job.copy(paused: true) : job,
+        )
+        .toList(),
   );
 }

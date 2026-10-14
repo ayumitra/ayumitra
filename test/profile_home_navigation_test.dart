@@ -73,6 +73,12 @@ void main() {
     expect(find.text('Test Alpha'), findsOneWidget);
     expect(find.text('Test Beta'), findsOneWidget);
     expect(find.text('Add profile'), findsOneWidget);
+    await tester.tap(find.byKey(const Key('home-settings')));
+    await tester.pumpAndSettle();
+    expect(find.byType(SettingsScreen), findsOneWidget);
+    expect(controller.activeProfileId, controller.data.profiles.first.id);
+    await tester.pageBack();
+    await tester.pumpAndSettle();
     await tester.tap(find.text('Test Beta'));
     await tester.pumpAndSettle();
 

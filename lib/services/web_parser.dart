@@ -1,3 +1,4 @@
+import 'task_cancellation.dart';
 import 'dart:convert';
 import 'dart:math';
 import 'dart:typed_data';
@@ -78,6 +79,8 @@ class WebParser {
           final text = await page.loadStructuredText();
           characters = RegExp(r'[a-zA-Z0-9]').allMatches(text.fullText).length;
           nativeRows = _nativeRows(page, text, sparse: characters < 150);
+        } on TaskCancelled {
+          rethrow;
         } catch (_) {
           // A failed text layer may still be a readable scan after rendering.
         }
@@ -88,6 +91,8 @@ class WebParser {
           if (transcribe != null) {
             try {
               visionRows = await _transcribePage(page);
+            } on TaskCancelled {
+              rethrow;
             } catch (_) {
               // Keep readable native rows and explicitly mark incomplete pages.
               // Never substitute model guesses or silently mark a scan ready.

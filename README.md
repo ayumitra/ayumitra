@@ -70,9 +70,15 @@ Tests cover authenticated storage, tampering, profile/session isolation and dele
 
 [Synthetic companion quality comparison](docs/research/companion-quality-2026-10-14.md) · [On-device STT research](docs/research/on-device-stt.md) · [Local voice setup and limits](docs/local-voice.md) · [Product brief](docs/product-brief.md) · [Evaluation plan](docs/eval-plan.md) · [Synthetic fixtures](docs/eval-fixtures/manifest.json)
 
+## Stopping work and preparing drafts
+
+A Stop control stays available across conversation, file, draft and Settings screens while AI work runs. It stops local decoding or aborts the active host/cloud request, rejects late results, and prevents further tool/format-repair steps. Saved messages, original files and completed extraction remain available. Stopped report jobs stay paused across restarts until you choose Retry. An original-file save already in progress finishes its index transaction before stopping.
+
+Opening a second-opinion draft immediately shows an editable source draft. Generation starts only when you choose Generate draft; Stop or leaving the screen preserves your edits. Settings is available from the header gear and the left menu. App lock protects all profiles.
+
 ## Optional app lock
 
-On Android and iOS, open **Settings → Security and privacy** to choose a 6–12 digit app PIN or device biometrics, with the phone's screen lock as fallback. Lock is off by default. Enabled apps lock when backgrounded, cover private routes and app-switcher previews, and require authentication to change or disable the lock. PIN verifiers and retry limits stay in secure device storage; there is no account or remote PIN recovery. Android blocks screenshots while enabled; iOS cannot block screenshots taken while unlocked. See [app-lock behavior and security scope](docs/research/app-lock.md).
+On Android and iOS, open **Settings → App lock · all profiles** to choose a 6–12 digit app PIN or device biometrics, with the phone's screen lock as fallback. Lock is off by default. Enabled apps lock when backgrounded, cover private routes and app-switcher previews, and require authentication to change or disable the lock. PIN verifiers and retry limits stay in secure device storage; there is no account or remote PIN recovery. Android blocks screenshots while enabled; iOS cannot block screenshots taken while unlocked. See [app-lock behavior and security scope](docs/research/app-lock.md).
 
 ## Local browser client
 

@@ -11,9 +11,11 @@ import '../domain/conversations.dart';
 import '../domain/extraction.dart';
 import '../domain/records.dart';
 import '../domain/profile_deletion.dart';
+import '../domain/processing_jobs.dart';
 import '../domain/retrieval.dart';
 import '../services/web_parser.dart';
 import '../services/report_markdown.dart';
+import '../services/task_cancellation.dart';
 import '../domain/report_metadata.dart';
 
 /// An in-memory replica of the production companion for desktop testing.
@@ -312,37 +314,35 @@ class DemoController extends AppController {
   Future<void> attachReport() async {
     final owner = profile;
     if (owner == null || busy) return;
-    busy = true;
-    activity = 'Reading your file…';
-    notifyListeners();
-    try {
-      final file = await FilePicker.pickFile(
-        type: FileType.custom,
-        allowedExtensions: const ['pdf', 'png', 'jpg', 'jpeg', 'txt'],
-      );
-      if (file == null ||
-          profile?.id != owner.id ||
-          !libraryImportOwnerIsCurrent) {
-        return;
-      }
-      if ((await file.length() ?? 0) > 30 * 1024 * 1024) {
-        failure = 'Choose a file up to 30 MB.';
-        return;
-      }
-      final bytes = await file.readAsBytes();
-      if (bytes.isEmpty ||
-          profile?.id != owner.id ||
-          !libraryImportOwnerIsCurrent) {
-        return;
-      }
-      await _importBytes(file.name, _extensionOf(file.name), bytes);
-    } catch (_) {
-      failure = 'The selected file could not be read locally. Please retry.';
-    } finally {
-      busy = false;
-      activity = '';
-      notifyListeners();
-    }
+    await runCancellableTask(
+      'Reading your file…',
+      () async {
+        final file = await taskCall(
+          () => FilePicker.pickFile(
+            type: FileType.custom,
+            allowedExtensions: const ['pdf', 'png', 'jpg', 'jpeg', 'txt'],
+          ),
+        );
+        if (file == null ||
+            profile?.id != owner.id ||
+            !libraryImportOwnerIsCurrent) {
+          return;
+        }
+        if ((await file.length() ?? 0) > 30 * 1024 * 1024) {
+          failure = 'Choose a file up to 30 MB.';
+          return;
+        }
+        final bytes = await taskCall(file.readAsBytes);
+        if (bytes.isEmpty ||
+            profile?.id != owner.id ||
+            !libraryImportOwnerIsCurrent) {
+          return;
+        }
+        await _importBytes(file.name, _extensionOf(file.name), bytes);
+      },
+      failureMessage:
+          'The selected file could not be read locally. Please retry.',
+    );
   }
 
   String _extensionOf(String name) {
@@ -351,11 +351,13 @@ class DemoController extends AppController {
   }
 
   void _save(VaultData next) {
+    checkTaskActive();
     data = next;
     notifyListeners();
   }
 
   Future<void> _appendTurn(ChatEntry entry) async {
+    checkTaskActive();
     if (profile == null) return;
     if (activeSession == null) {
       final now = DateTime.now();
@@ -435,7 +437,9 @@ class DemoController extends AppController {
     if (entry.isUser && embeddings.available && rebuilt.text.isNotEmpty) {
       try {
         final indexed = rebuilt.copy(
-          vector: await embeddings.embed(rebuilt.text, document: true),
+          vector: await taskCall(
+            () => embeddings.embed(rebuilt.text, document: true),
+          ),
           embeddingVersion: embeddings.version,
         );
         _save(
@@ -464,20 +468,12 @@ class DemoController extends AppController {
     Uint8List bytes,
   ) async {
     if (busy || profile == null) return;
-    busy = true;
-    failure = null;
-    activity = 'Saving and reading your report…';
-    notifyListeners();
-    try {
-      await _importBytes(name, extension.toLowerCase(), bytes);
-    } catch (_) {
-      failure =
-          'This file could not be read locally. Please check the file and retry.';
-    } finally {
-      busy = false;
-      activity = '';
-      notifyListeners();
-    }
+    await runCancellableTask(
+      'Saving and reading your report…',
+      () => _importBytes(name, extension.toLowerCase(), bytes),
+      failureMessage:
+          'This file could not be read locally. Please check the file and retry.',
+    );
   }
 
   Future<void> _importBytes(
@@ -512,6 +508,7 @@ class DemoController extends AppController {
       eventDate: DateTime(importedAt.year, importedAt.month, importedAt.day),
       dateIsFallback: true,
     );
+    trackTaskReport(report);
     _originals['${report.profileId}:${report.id}'] = Uint8List.fromList(bytes);
     _save(data.copy(reports: [...data.reports, report]));
     await _process(report);
@@ -529,7 +526,8 @@ class DemoController extends AppController {
     intelligence.visionProfileContext = buildProfileContext(owner, data.vitals);
     try {
       return await WebParser(
-        transcribe: intelligence.transcribeImage,
+        transcribe: (bytes) =>
+            taskCall(() => intelligence.transcribeImage(bytes)),
       ).parse(report, bytes);
     } finally {
       intelligence.visionProfileContext = previous;
@@ -540,10 +538,11 @@ class DemoController extends AppController {
     final stored = _storedOwnedReport(report);
     if (stored == null) return;
     report = stored;
+    trackTaskReport(report);
     final owner = profile;
     if (owner == null || owner.id != report.profileId) return;
     stepLog.clear();
-    var next = report.copy(status: ReportStatus.processing, clearSummary: true);
+    var next = report.copy(status: ReportStatus.processing);
     _save(
       data.copy(
         reports: data.reports
@@ -559,7 +558,7 @@ class DemoController extends AppController {
       final bytes = _originals['${report.profileId}:${report.id}'];
       if (bytes == null) throw const FormatException('Original missing.');
       announceStep('Reading the document…');
-      final parsedLines = await _parseText(report, bytes);
+      final parsedLines = await taskCall(() => _parseText(report, bytes));
       final lines = parsedLines.where((l) => l.text.trim().isNotEmpty).toList();
       if (lines.isEmpty) {
         _save(
@@ -598,7 +597,9 @@ class DemoController extends AppController {
         announceStep('Building the local search index…');
         final vectors = <String, List<double>>{};
         for (final line in lines) {
-          vectors[line.id] = await embeddings.embed(line.text, document: true);
+          vectors[line.id] = await taskCall(
+            () => embeddings.embed(line.text, document: true),
+          );
         }
         next = next.copy(
           vectors: vectors,
@@ -632,8 +633,10 @@ class DemoController extends AppController {
               .toList(),
         ),
       );
-      if (intelligence.available) {
-        await _summarizeReport(next, owner);
+      final notesGenerated =
+          intelligence.available && await _summarizeReport(next, owner);
+      if (notesGenerated && embeddings.available && !hasSparseText) {
+        _save(finishReportJob(data, report.id, owner.id));
       }
       if (importBelongsInConversation) {
         await _appendTurn(
@@ -646,7 +649,10 @@ class DemoController extends AppController {
           ),
         );
       }
+    } on TaskCancelled {
+      rethrow;
     } catch (_) {
+      checkTaskActive();
       _save(
         data.copy(
           reports: data.reports
@@ -665,7 +671,7 @@ class DemoController extends AppController {
     }
   }
 
-  Future<void> _summarizeReport(Report report, Profile owner) async {
+  Future<bool> _summarizeReport(Report report, Profile owner) async {
     announceStep('Writing report notes as Markdown…');
     final output = await generateReportMarkdown(
       contextualIntelligence(intelligence, owner),
@@ -702,6 +708,7 @@ class DemoController extends AppController {
             .toList(),
       ),
     );
+    return output != null;
   }
 
   @override
@@ -806,15 +813,19 @@ class DemoController extends AppController {
     if (profile == null || busy) return;
     final stored = _storedOwnedReport(report);
     if (stored == null) return;
-    busy = true;
-    notifyListeners();
-    try {
+    await runCancellableTask('Reading the saved report…', () async {
+      trackTaskReport(stored);
+      _save(
+        enqueueReportJob(
+          data,
+          stored.id,
+          stored.profileId,
+          DateTime.now(),
+          resetAttempts: true,
+        ),
+      );
       await _process(stored);
-    } finally {
-      busy = false;
-      activity = '';
-      notifyListeners();
-    }
+    });
   }
 
   @override

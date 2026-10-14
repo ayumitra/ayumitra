@@ -238,7 +238,8 @@ void main() {
     // Finished tools stay listed; the running step shows beneath them.
     expect(find.text('Recalling earlier conversation…'), findsOneWidget);
     expect(find.text('Searching your saved reports…'), findsOneWidget);
-    expect(find.text('Writing your answer…'), findsOneWidget);
+    expect(find.text('Writing your answer…'), findsWidgets);
+    expect(find.byKey(const Key('global-stop-task')), findsOneWidget);
     // Prompt internals and model chatter never render as UI text.
     expect(find.textContaining('sourceId'), findsNothing);
     expect(find.textContaining('recentUserRequests'), findsNothing);

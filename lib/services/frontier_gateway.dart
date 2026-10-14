@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 import '../domain/frontier_models.dart';
+import 'task_cancellation.dart';
 
 /// Optional direct-provider text transport. The legacy class name remains for
 /// compatibility; no gateway server is involved. The controller requires the
@@ -12,6 +13,15 @@ class FrontierGateway {
   FrontierGateway({http.Client? client}) : _client = client ?? http.Client();
 
   final http.Client _client;
+  final _activeRequests = <CancellationToken>{};
+
+  /// Aborts only this transport's active requests; a later task can reuse it.
+  void cancelActiveRequests() {
+    for (final token in _activeRequests.toList()) {
+      token.cancel();
+    }
+  }
+
   static const maxRequestBytes = 256 * 1024;
   static const maxResponseBytes = 512 * 1024;
   static const requestTimeout = Duration(seconds: 120);
@@ -77,16 +87,23 @@ class FrontierGateway {
         'The selected context is too large. Select fewer records.',
       );
     }
-    final abort = Completer<void>();
+    final token = CancellationToken();
+    _activeRequests.add(token);
     try {
-      return await _generate(
-        endpoint,
-        apiKey,
-        body,
-        provider,
-        model,
-        abort.future,
-      ).timeout(requestTimeout);
+      return await token
+          .race(
+            _generate(
+              endpoint,
+              apiKey,
+              body,
+              provider,
+              model,
+              token.whenCancelled,
+            ),
+          )
+          .timeout(requestTimeout);
+    } on TaskCancelled {
+      rethrow;
     } on FrontierGatewayException {
       rethrow;
     } catch (_) {
@@ -95,7 +112,8 @@ class FrontierGateway {
         'The cloud request did not finish. Your local records are saved; no fallback model was used.',
       );
     } finally {
-      if (!abort.isCompleted) abort.complete();
+      _activeRequests.remove(token);
+      token.cancel();
     }
   }
 

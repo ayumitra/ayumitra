@@ -64,47 +64,50 @@ class AyumitraApp extends StatelessWidget {
       ),
     ),
     builder: (context, child) => PrivacyCover(
-      child: controller.isPreview
-          ? Column(
-              children: [
-                Material(
-                  color: const Color(0xffe3efe8),
-                  child: SafeArea(
-                    bottom: false,
-                    child: Padding(
-                      padding: const EdgeInsets.all(10),
-                      child: Text(
-                        'Local build · Your documents · In-memory only · Nothing uploaded',
-                        style: Theme.of(context).textTheme.labelMedium,
-                        textAlign: TextAlign.center,
+      child: _CancelableTaskFrame(
+        controller: controller,
+        child: controller.isPreview
+            ? Column(
+                children: [
+                  Material(
+                    color: const Color(0xffe3efe8),
+                    child: SafeArea(
+                      bottom: false,
+                      child: Padding(
+                        padding: const EdgeInsets.all(10),
+                        child: Text(
+                          'Local build · Your documents · In-memory only · Nothing uploaded',
+                          style: Theme.of(context).textTheme.labelMedium,
+                          textAlign: TextAlign.center,
+                        ),
                       ),
                     ),
                   ),
-                ),
-                Expanded(child: child!),
-              ],
-            )
-          : Column(
-              children: [
-                if (controller.automaticModelsSupported)
-                  AnimatedBuilder(
-                    animation: controller,
-                    builder: (context, _) =>
-                        controller.modelSetupProgress == null ||
-                            controller.modelSetupProgress!.state == 'ready' &&
-                                !controller.modelSetupRunning
-                        ? const SizedBox.shrink()
-                        : SafeArea(
-                            bottom: false,
-                            child: ModelSetupCard(
-                              controller: controller,
-                              compact: true,
+                  Expanded(child: child!),
+                ],
+              )
+            : Column(
+                children: [
+                  if (controller.automaticModelsSupported)
+                    AnimatedBuilder(
+                      animation: controller,
+                      builder: (context, _) =>
+                          controller.modelSetupProgress == null ||
+                              controller.modelSetupProgress!.state == 'ready' &&
+                                  !controller.modelSetupRunning
+                          ? const SizedBox.shrink()
+                          : SafeArea(
+                              bottom: false,
+                              child: ModelSetupCard(
+                                controller: controller,
+                                compact: true,
+                              ),
                             ),
-                          ),
-                  ),
-                Expanded(child: child!),
-              ],
-            ),
+                    ),
+                  Expanded(child: child!),
+                ],
+              ),
+      ),
     ),
     home: AnimatedBuilder(
       animation: controller,
@@ -126,6 +129,64 @@ class AyumitraApp extends StatelessWidget {
         }
         return CompanionScreen(controller: controller);
       },
+    ),
+  );
+}
+
+/// Kept above the app Navigator so a task remains stoppable from file pages,
+/// settings and draft routes. The Navigator child always stays in the same slot.
+class _CancelableTaskFrame extends StatelessWidget {
+  const _CancelableTaskFrame({required this.controller, required this.child});
+  final AppController controller;
+  final Widget child;
+  @override
+  Widget build(BuildContext context) => AnimatedBuilder(
+    animation: controller,
+    child: child,
+    builder: (context, child) => Column(
+      children: [
+        controller.canCancelTask || controller.cancellingTask
+            ? Material(
+                color: const Color(0xffe3efe8),
+                child: SafeArea(
+                  bottom: false,
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 4,
+                    ),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            controller.cancellingTask
+                                ? 'Stopping… Your saved files are kept.'
+                                : controller.activity.isEmpty
+                                ? 'Working…'
+                                : controller.activity,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(fontSize: 12),
+                          ),
+                        ),
+                        TextButton.icon(
+                          key: const Key('global-stop-task'),
+                          onPressed: controller.canCancelTask
+                              ? controller.cancelCurrentTask
+                              : null,
+                          icon: const Icon(Icons.stop_circle_outlined),
+                          label: Text(
+                            controller.cancellingTask ? 'Stopping…' : 'Stop',
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              )
+            : const SizedBox.shrink(),
+        Expanded(child: child!),
+      ],
     ),
   );
 }
@@ -667,6 +728,21 @@ class _CompanionScreenState extends State<CompanionScreen> with RouteAware {
     if (confirmed == true) await c.deleteConversation(session.id);
   }
 
+  Future<void> _openSettings() async {
+    _closeDrawer();
+    final previousProfile = c.activeProfileId;
+    await Navigator.of(
+      context,
+    ).push(MaterialPageRoute(builder: (_) => SettingsScreen(controller: c)));
+    if (!mounted || previousProfile == c.activeProfileId) return;
+    input.clear();
+    setState(() {
+      section = 0;
+      category = null;
+      selectedAge = null;
+    });
+  }
+
   Future<void> _manageProfiles() async {
     _closeDrawer();
     await Navigator.of(context).push(
@@ -691,6 +767,9 @@ class _CompanionScreenState extends State<CompanionScreen> with RouteAware {
       MaterialPageRoute(
         builder: (homeContext) => ProfileHomeScreen(
           controller: c,
+          onSettings: () => Navigator.of(homeContext).push(
+            MaterialPageRoute(builder: (_) => SettingsScreen(controller: c)),
+          ),
           onOpenProfile: (id) async {
             await c.selectProfile(id);
             if (c.failure != null || c.activeProfileId != id) {
@@ -754,6 +833,12 @@ class _CompanionScreenState extends State<CompanionScreen> with RouteAware {
                 ),
               ),
             ),
+          ),
+          ListTile(
+            key: const Key('drawer-settings'),
+            leading: const Icon(Icons.settings_outlined),
+            title: const Text('Settings'),
+            onTap: _openSettings,
           ),
           Padding(
             padding: const EdgeInsets.only(left: 2, bottom: 16),
@@ -1087,25 +1172,10 @@ class _CompanionScreenState extends State<CompanionScreen> with RouteAware {
             icon: const Icon(Icons.lock_outline),
           ),
         IconButton(
-          tooltip: c.isPreview ? 'Local AI setup' : 'Companion settings',
-          onPressed: c.busy
-              ? null
-              : () async {
-                  final previousProfile = c.activeProfileId;
-                  await Navigator.of(context).push(
-                    MaterialPageRoute(
-                      builder: (_) => SettingsScreen(controller: c),
-                    ),
-                  );
-                  if (!mounted || previousProfile == c.activeProfileId) return;
-                  input.clear();
-                  setState(() {
-                    section = 0;
-                    category = null;
-                    selectedAge = null;
-                  });
-                },
-          icon: const Icon(Icons.tune),
+          key: const Key('header-settings'),
+          tooltip: 'Settings',
+          onPressed: _openSettings,
+          icon: const Icon(Icons.settings_outlined),
         ),
       ],
     ),
@@ -1484,9 +1554,13 @@ class _CompanionScreenState extends State<CompanionScreen> with RouteAware {
                 ),
               const SizedBox(width: 4),
               IconButton.filled(
-                tooltip: 'Send message',
-                onPressed: c.busy ? null : _send,
-                icon: const Icon(Icons.arrow_upward),
+                tooltip: c.canCancelTask ? 'Stop generation' : 'Send message',
+                onPressed: c.canCancelTask
+                    ? c.cancelCurrentTask
+                    : c.busy
+                    ? null
+                    : _send,
+                icon: Icon(c.canCancelTask ? Icons.stop : Icons.arrow_upward),
               ),
             ],
           ),
@@ -1936,6 +2010,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
+  Widget _securityEntry(AppController c) => ListTile(
+    key: const Key('security-settings'),
+    leading: const Icon(Icons.lock_outline),
+    title: const Text('App lock · all profiles'),
+    subtitle: Text(
+      c.appLock!.enabled
+          ? 'PIN or device authentication protects the whole app'
+          : 'Add an app PIN or device authentication',
+    ),
+    onTap: () => Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => SecuritySettingsScreen(controller: c.appLock!),
+      ),
+    ),
+  );
+
   @override
   Widget build(BuildContext context) => AnimatedBuilder(
     animation: widget.controller,
@@ -1966,10 +2056,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
           }
         }
         return Scaffold(
-          appBar: AppBar(title: const Text('Local AI setup')),
+          appBar: AppBar(title: const Text('Settings')),
           body: ListView(
             padding: const EdgeInsets.all(24),
             children: [
+              if (!c.isPreview && c.appLock != null) _securityEntry(c),
               const Text(
                 'Connect your own models',
                 style: TextStyle(fontSize: 26, fontWeight: FontWeight.w600),
@@ -2081,10 +2172,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
       }
       if (c.automaticModelsSupported) {
         return Scaffold(
-          appBar: AppBar(title: const Text('Your companion’s setup')),
+          appBar: AppBar(title: const Text('Settings')),
           body: ListView(
             padding: const EdgeInsets.all(24),
             children: [
+              if (!c.isPreview && c.appLock != null) _securityEntry(c),
               const Text(
                 'All AI runs here',
                 style: TextStyle(fontSize: 26, fontWeight: FontWeight.w600),
@@ -2134,10 +2226,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
         );
       }
       return Scaffold(
-        appBar: AppBar(title: const Text('Your companion’s setup')),
+        appBar: AppBar(title: const Text('Settings')),
         body: ListView(
           padding: const EdgeInsets.all(24),
           children: [
+            if (!c.isPreview && c.appLock != null) _securityEntry(c),
             const Text(
               'All AI runs here',
               style: TextStyle(
@@ -2252,23 +2345,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 child: Text(c.failure!),
               ),
             const SizedBox(height: 20),
-            if (c.appLock != null)
-              ListTile(
-                key: const Key('security-settings'),
-                leading: const Icon(Icons.lock_outline),
-                title: const Text('Security and privacy'),
-                subtitle: Text(
-                  c.appLock!.enabled
-                      ? 'App lock enabled'
-                      : 'Add a PIN or device biometrics',
-                ),
-                onTap: () => Navigator.of(context).push(
-                  MaterialPageRoute(
-                    builder: (_) =>
-                        SecuritySettingsScreen(controller: c.appLock!),
-                  ),
-                ),
-              ),
             ListTile(
               leading: const Icon(Icons.code),
               title: const Text('Open-source licenses'),

@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:async';
 import 'dart:io';
 
 import 'package:ayumitra/app_controller.dart';
@@ -21,12 +22,15 @@ class _JobIntelligence extends LocalIntelligence {
   final inputs = <String>[];
   final instructions = <String>[];
   bool invalidMarkdown = false;
+  Completer<String>? blocked;
+  int blockAfter = 0;
   @override
   bool get available => ready;
   @override
   Future<String> generate(String instruction, String input) async {
     inputs.add(input);
     instructions.add(instruction);
+    if (blocked != null && inputs.length > blockAfter) return blocked!.future;
     if (fail) throw StateError('Synthetic interrupted model');
     if (instruction == organizerPrompt || instruction == extractorPrompt) {
       throw StateError('Reports must use Markdown rather than forced JSON.');
@@ -58,6 +62,32 @@ class _JobEmbeddings extends LocalEmbeddings {
 class _ReadSpyVault extends EncryptedVault {
   _ReadSpyVault({required super.directory, required super.key});
   final reads = <String>[];
+  Completer<void>? saveGate, saveEntered, originalGate, originalEntered;
+  bool failNextSave = false;
+  @override
+  Future<void> save(VaultData next) async {
+    if (failNextSave) {
+      failNextSave = false;
+      throw StateError('Synthetic unavailable storage');
+    }
+    final gate = saveGate;
+    if (gate != null) {
+      saveGate = null;
+      saveEntered!.complete();
+      await gate.future;
+    }
+    await super.save(next);
+  }
+
+  @override
+  Future<void> saveOriginal(Report report, Uint8List bytes) async {
+    await super.saveOriginal(report, bytes);
+    if (originalGate != null) {
+      originalEntered!.complete();
+      await originalGate!.future;
+    }
+  }
+
   @override
   Future<Uint8List> readOriginal(Report report, String activeProfileId) {
     reads.add('${report.profileId}/${report.id}');
@@ -171,6 +201,188 @@ void main() {
   }
 
   test(
+    'Stop while acquiring protection releases the eventual lease without running work',
+    () async {
+      const channel = MethodChannel('synthetic/cancellation-lease');
+      final begin = Completer<void>();
+      final allow = Completer<bool>();
+      final methods = <String>[];
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, (call) async {
+            methods.add(call.method);
+            if (call.method == 'begin') {
+              begin.complete();
+              return allow.future;
+            }
+            return null;
+          });
+      addTearDown(
+        () => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(channel, null),
+      );
+      final c = await open(
+        fixture(),
+        localProcessing: LocalProcessing(channel: channel, supported: true),
+      );
+      var ran = false;
+      final task = c.runCancellableTask('Waiting for protection', () async {
+        ran = true;
+      }, background: true);
+      await begin.future;
+      c.cancelCurrentTask();
+      expect(c.busy, isTrue);
+      allow.complete(true);
+      await task;
+      expect(ran, isFalse);
+      expect(methods, ['begin', 'end']);
+      expect(c.busy, isFalse);
+      expect(c.failure, isNull);
+    },
+  );
+  test(
+    'Stop finishes an in-flight vault write before admitting a fresh task',
+    () async {
+      final c = await open(fixture());
+      final entered = vault.saveEntered = Completer<void>();
+      final gate = vault.saveGate = Completer<void>();
+      final next = c.data.copy(
+        activeSessionByProfile: {'alice': 'committed-before-stop'},
+      );
+      final task = c.runCancellableTask(
+        'Saving',
+        () => c.persistCompanionData(next),
+      );
+      await entered.future;
+      c.cancelCurrentTask();
+      expect(c.busy, isTrue);
+      var startedNew = false;
+      await c.runCancellableTask('New', () async {
+        startedNew = true;
+      });
+      expect(startedNew, isFalse);
+      gate.complete();
+      await task;
+      expect(c.data.activeSessionByProfile, next.activeSessionByProfile);
+      expect(
+        (await vault.read()).activeSessionByProfile,
+        next.activeSessionByProfile,
+      );
+      expect(c.busy, isFalse);
+    },
+  );
+  for (final newSession in [false, true]) {
+    test(
+      'Stop preserves submitted user turn and memory during save (new conversation: $newSession)',
+      () async {
+        final c = await open(fixture(jobs: []));
+        if (newSession) {
+          c.data = c.data.copy(
+            sessions: [],
+            memories: [],
+            clearActiveSession: true,
+          );
+          c.activeSessionId = null;
+          c.restoreConversation();
+        }
+        final entered = vault.saveEntered = Completer<void>();
+        final gate = vault.saveGate = Completer<void>();
+        final task = c.ask('My synthetic hemoglobin is 13 g/dL');
+        await entered.future;
+        c.cancelCurrentTask();
+        gate.complete();
+        await task;
+        expect(c.messages.last.text, 'My synthetic hemoglobin is 13 g/dL');
+        expect(c.messages.last.isUser, isTrue);
+        expect(c.activeSession!.turns.last.text, c.messages.last.text);
+        expect(
+          (await vault.read()).memories.last.text,
+          contains('hemoglobin is 13'),
+        );
+        expect(c.failure, isNull);
+        expect(intelligence.inputs, isEmpty);
+      },
+    );
+  }
+  test(
+    'Stop during original save completes its index transaction and pauses processing',
+    () async {
+      final c = await open(fixture(jobs: []));
+      final entered = vault.originalEntered = Completer<void>();
+      final gate = vault.originalGate = Completer<void>();
+      final bytes = Uint8List.fromList(
+        utf8.encode('SYNTHETIC newly imported file'),
+      );
+      final task = c.importSample(bytes);
+      await entered.future;
+      c.cancelCurrentTask();
+      expect(c.busy, isTrue);
+      gate.complete();
+      await task;
+      vault.originalGate = null;
+      final imported = c.data.reports.last;
+      expect(imported.name, 'Synthetic blood report.txt');
+      expect(await vault.readOriginal(imported, 'alice'), bytes);
+      expect((await vault.read()).reports.last.id, imported.id);
+      expect(c.data.processingJobs.single.paused, isTrue);
+      expect(intelligence.inputs, isEmpty);
+      expect(c.failure, isNull);
+    },
+  );
+  test(
+    'Stop pauses the entire queued batch durably without starting the next report',
+    () async {
+      intelligence.blocked = Completer<String>();
+      final c = await open(fixture(jobs: [_job('alice'), _job('bob')]));
+      final task = c.runPendingProcessingJobs();
+      for (var i = 0; i < 100 && intelligence.inputs.isEmpty; i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 5));
+      }
+      expect(intelligence.inputs.length, 1);
+      c.cancelCurrentTask();
+      await task;
+      expect(c.data.processingJobs.every((job) => job.paused), isTrue);
+      expect(c.data.processingJobs.map((job) => job.attempts), [1, 0]);
+      expect(
+        (await vault.read()).processingJobs.every((job) => job.paused),
+        isTrue,
+      );
+      final reads = vault.reads.length;
+      await c.runPendingProcessingJobs();
+      expect(vault.reads.length, reads);
+      intelligence.blocked!.complete('Uncited late model output');
+      await Future<void>.delayed(Duration.zero);
+      expect(
+        c.data.reports.every((report) => report.summaryMarkdown == null),
+        isTrue,
+      );
+      expect(intelligence.inputs.length, 1);
+    },
+  );
+  test(
+    'Stop on a later report does not requeue a completed earlier report',
+    () async {
+      intelligence.blocked = Completer<String>();
+      intelligence.blockAfter = 1;
+      final c = await open(fixture(jobs: [_job('alice'), _job('bob')]));
+      final task = c.runPendingProcessingJobs();
+      for (var i = 0; i < 100 && intelligence.inputs.length < 2; i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 5));
+      }
+      expect(intelligence.inputs.length, 2);
+      c.cancelCurrentTask();
+      await task;
+      expect(c.data.processingJobs.length, 1);
+      expect(c.data.processingJobs.single.profileId, 'bob');
+      expect(c.data.processingJobs.single.paused, isTrue);
+      final completed = c.data.reports.firstWhere(
+        (r) => r.profileId == 'alice',
+      );
+      expect(completed.status, ReportStatus.ready);
+      expect(completed.summaryMarkdown, isNotNull);
+      intelligence.blocked!.complete('Late notes');
+    },
+  );
+  test(
     'background completion processes inactive owned report without changing current conversation',
     () async {
       final original = fixture();
@@ -207,6 +419,50 @@ void main() {
       expect(intelligence.instructions, isNot(contains(extractorPrompt)));
       expect(bob.vectors, isNotEmpty);
       expect((await vault.read()).processingJobs, isEmpty);
+    },
+  );
+  test(
+    'failed pause persistence stays stopped in memory and reports the storage problem',
+    () async {
+      intelligence.blocked = Completer<String>();
+      final c = await open(fixture());
+      final task = c.runPendingProcessingJobs();
+      for (var i = 0; i < 100 && intelligence.inputs.isEmpty; i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 5));
+      }
+      expect(intelligence.inputs.length, 1);
+      vault.failNextSave = true;
+      c.cancelCurrentTask();
+      await task;
+      expect(c.busy, isFalse);
+      expect(c.failure, contains('paused status could not be saved'));
+      expect(c.data.processingJobs.single.paused, isTrue);
+      await c.runPendingProcessingJobs();
+      expect(intelligence.inputs.length, 1);
+      intelligence.blocked!.complete('Late notes');
+    },
+  );
+  test(
+    'old saved notes cannot mark a failed new processing attempt as successful',
+    () async {
+      intelligence.invalidMarkdown = true;
+      final data = fixture();
+      final c = await open(
+        data.copy(
+          reports: data.reports
+              .map(
+                (r) => r.copy(
+                  summaryMarkdown: 'Previous notes [shared-report/p1-l1]',
+                ),
+              )
+              .toList(),
+        ),
+      );
+      await c.runPendingProcessingJobs();
+      final report = c.data.reports.firstWhere((r) => r.profileId == 'bob');
+      expect(report.summaryMarkdown, 'Previous notes [shared-report/p1-l1]');
+      expect(report.status, ReportStatus.needsReview);
+      expect(c.data.processingJobs.single.attempts, 1);
     },
   );
   test('uncited report notes cannot complete an unfinished job', () async {

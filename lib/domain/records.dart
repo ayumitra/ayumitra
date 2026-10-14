@@ -406,6 +406,7 @@ class ReportProcessingJob {
     required this.profileId,
     required this.nextAttemptAt,
     this.attempts = 0,
+    this.paused = false,
   }) {
     if (attempts < 0) {
       throw const FormatException('Processing attempts cannot be negative.');
@@ -415,18 +416,27 @@ class ReportProcessingJob {
   final int attempts;
   final DateTime nextAttemptAt;
 
-  ReportProcessingJob copy({int? attempts, DateTime? nextAttemptAt}) =>
-      ReportProcessingJob(
-        reportId: reportId,
-        profileId: profileId,
-        attempts: attempts ?? this.attempts,
-        nextAttemptAt: nextAttemptAt ?? this.nextAttemptAt,
-      );
+  /// Durable user Stop: paused jobs are skipped by [pendingReportJobs] across
+  /// restarts until an explicit Retry unpauses. Never set automatically.
+  final bool paused;
+
+  ReportProcessingJob copy({
+    int? attempts,
+    DateTime? nextAttemptAt,
+    bool? paused,
+  }) => ReportProcessingJob(
+    reportId: reportId,
+    profileId: profileId,
+    attempts: attempts ?? this.attempts,
+    nextAttemptAt: nextAttemptAt ?? this.nextAttemptAt,
+    paused: paused ?? this.paused,
+  );
   Json toJson() => {
     'reportId': reportId,
     'profileId': profileId,
     'attempts': attempts,
     'nextAttemptAt': nextAttemptAt.toIso8601String(),
+    'paused': paused,
   };
   factory ReportProcessingJob.fromJson(Json json) {
     final attempts = json['attempts'];
@@ -439,6 +449,8 @@ class ReportProcessingJob {
           ? attempts
           : throw const FormatException('Invalid job attempts.'),
       nextAttemptAt: DateTime.parse(json['nextAttemptAt'] as String),
+      // Absent on pre-pause vaults: a missing flag never pauses old work.
+      paused: json['paused'] as bool? ?? false,
     );
   }
 }
